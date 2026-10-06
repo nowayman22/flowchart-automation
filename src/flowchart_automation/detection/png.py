@@ -105,6 +105,21 @@ def find_template_in_region(
     return None
 
 
+def step_template_paths(step: dict[str, Any]) -> list[str]:
+    """The template files a PNG step matches against.
+
+    A step can hold several snips, so one step can detect any of them. Projects
+    saved before that carry a single ``path``, which is treated as a one-entry
+    list. Pure, so it is testable without a display.
+    """
+    paths = [p for p in (step.get("paths") or []) if p]
+    if not paths:
+        single = step.get("path")
+        if single:
+            paths = [single]
+    return paths
+
+
 def _collect_templates(
     step: dict[str, Any],
     template_cache: TemplateCache,

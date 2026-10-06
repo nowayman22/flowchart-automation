@@ -4046,13 +4046,10 @@ class FlowchartClickerApp:
     def step_template_paths(self, step):
         """The template files a PNG step matches against.
 
-        A step can hold several snips, so one step can detect any of them. Older
-        saves carry a single path, which is treated as a one-entry list; folder
-        mode still reads its directory instead.
+        Delegated so the rule lives in the refactor target, where it can be
+        tested without a display.
         """
-        paths = [p for p in (step.get('paths') or []) if p]
-        if not paths and step.get('path'): paths = [step['path']]
-        return paths
+        return flowchart_png.step_template_paths(step)
 
     def collect_step_templates(self, step, image_mode):
         """Load every template a PNG step should try, as (label, template_data).

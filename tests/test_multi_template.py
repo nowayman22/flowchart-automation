@@ -14,17 +14,13 @@ import numpy as np
 import pytest
 from conftest import requires_display
 
-# --- path resolution (pure) -------------------------------------------------
+# --- path resolution (pure, runs headless) ---------------------------------
 
 
 def _paths(step):
-    import sys
-    from pathlib import Path
+    from flowchart_automation.detection.png import step_template_paths
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from FlowchartClickerApp66 import FlowchartClickerApp
-
-    return FlowchartClickerApp.step_template_paths(None, step)
+    return step_template_paths(step)
 
 
 def test_paths_list_is_used_when_present() -> None:
@@ -47,6 +43,15 @@ def test_no_templates_resolves_to_nothing() -> None:
 
 def test_explicit_list_wins_over_a_stale_path() -> None:
     assert _paths({"paths": ["new.png"], "path": "old.png"}) == ["new.png"]
+
+
+def test_legacy_method_delegates_to_the_shared_helper(app) -> None:
+    """The app's method and the detection module must agree."""
+    instance, _root = app
+    from flowchart_automation.detection.png import step_template_paths
+
+    step = {"paths": ["x.png", "y.png"]}
+    assert instance.step_template_paths(step) == step_template_paths(step) == ["x.png", "y.png"]
 
 
 # --- detection --------------------------------------------------------------
