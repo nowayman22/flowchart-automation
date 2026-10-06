@@ -143,6 +143,9 @@ class ColorStep(BaseStep):
     # Morphological opening width in pixels, 0 = off. Cuts the thin bridges that
     # make cv2.findContours merge neighbouring blobs into a single contour.
     split_blob_width: int = 0
+    # Seconds to wait after the pointer arrives, before pressing the button.
+    # 0 clicks immediately.
+    click_delay: float = 0.0
 
 
 @dataclass
@@ -167,6 +170,8 @@ class ClickStep(BaseStep):
     action: str = "Left Click"
     coords: tuple[int, int] = (100, 100)
     key_to_press: str = ""
+    # Seconds to wait after the pointer arrives, before pressing the button.
+    click_delay: float = 0.0
 
 
 @dataclass

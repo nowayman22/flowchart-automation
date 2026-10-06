@@ -1682,6 +1682,11 @@ class FlowchartClickerApp:
                     for widget_key in ['get_loc_btn', 'coords_label']:
                         if self.properties_widgets.get(widget_key):
                              self.properties_widgets[widget_key].grid_remove() if is_key_press or is_click_only else self.properties_widgets[widget_key].grid()
+                    # Click delay only applies to actions that press a button.
+                    is_click = action_var.get() in ('Left Click', 'Click Object', 'Right Click', 'Click Only')
+                    for widget_key in ['click_delay_entry', 'click_delay_label']:
+                        if self.properties_widgets.get(widget_key):
+                            self.properties_widgets[widget_key].grid() if is_click else self.properties_widgets[widget_key].grid_remove()
                 
                 tk.Radiobutton(action_frm, text="Left Click", variable=action_var, value='Left Click', command=_update_location_details).pack(side=tk.LEFT)
                 tk.Radiobutton(action_frm, text="Right Click", variable=action_var, value='Right Click', command=_update_location_details).pack(side=tk.LEFT, padx=5)
@@ -1743,6 +1748,22 @@ class FlowchartClickerApp:
 
             tk.Label(details_lf, text="Split Blobs (px):").grid(row=5, column=0, sticky='w', pady=(5,0)); w = tk.Entry(details_lf, width=7); w.insert(0, str(step.get('split_blob_width', 0))); w.grid(row=5, column=1, sticky='w', padx=2, pady=(5,0)); self.properties_widgets['split_blob_width'] = w
             tk.Label(details_lf, text="0 = off. Cuts thin joins that merge blobs.", font=('Helvetica', 8)).grid(row=5, column=2, columnspan=2, sticky='w', pady=(5,0))
+
+            # Time between the pointer arriving and the button going down.
+            click_delay_widgets = []
+            cd_label = tk.Label(details_lf, text="Click Delay (s):"); cd_label.grid(row=6, column=0, sticky='w', pady=(5,0))
+            w = tk.Entry(details_lf, width=7); w.insert(0, str(step.get('click_delay', 0))); w.grid(row=6, column=1, sticky='w', padx=2, pady=(5,0)); self.properties_widgets['click_delay_entry'] = w
+            cd_hint = tk.Label(details_lf, text="Move, wait, then click.", font=('Helvetica', 8)); cd_hint.grid(row=6, column=2, columnspan=2, sticky='w', pady=(5,0))
+            click_delay_widgets.extend((cd_label, w, cd_hint))
+
+            def _update_click_delay_visibility(*_args):
+                # Only the clicking actions use it; Detect and Count never click.
+                shows = action_var.get() in ('Click Object', 'Left Click', 'Right Click')
+                for widget in click_delay_widgets:
+                    widget.grid() if shows else widget.grid_remove()
+
+            action_var.trace_add('write', _update_click_delay_visibility)
+            _update_click_delay_visibility()
 
             area_btn_frame = tk.Frame(details_lf); area_btn_frame.grid(row=3, column=0, columnspan=4, sticky='w', pady=(5,0))
             area_text = f"Area: {step['area'][2]-step['area'][0]}x{step['area'][3]-step['area'][1]}" if step.get('area') else "Area: Global"
@@ -1830,6 +1851,8 @@ class FlowchartClickerApp:
             w_lbl = tk.Label(details_lf,text=str(step.get('coords'))); w_lbl.grid(row=0,column=1,padx=10); self.properties_widgets['coords_label'] = w_lbl
             w_label = tk.Label(details_lf, text="Key to Press:"); w_label.grid(row=1, column=0, sticky='w', pady=5); self.properties_widgets['key_press_label'] = w_label
             w_entry = tk.Entry(details_lf, width=15); w_entry.insert(0, step.get('key_to_press', '')); w_entry.grid(row=1, column=1, sticky='w'); self.properties_widgets['key_press_entry'] = w_entry
+            w_label = tk.Label(details_lf, text="Click Delay (s):"); w_label.grid(row=2, column=0, sticky='w', pady=5); self.properties_widgets['click_delay_label'] = w_label
+            w_entry = tk.Entry(details_lf, width=15); w_entry.insert(0, str(step.get('click_delay', 0))); w_entry.grid(row=2, column=1, sticky='w'); self.properties_widgets['click_delay_entry'] = w_entry
             _update_location_details()
             
         def add_flow(parent, row, label, action_key, goto_key):
@@ -2078,6 +2101,8 @@ class FlowchartClickerApp:
                             s['min_pixel_area'] = int(w['min_pixel_area'].get())
                             s['blob_target'] = w['blob_target'].get()
                             s['split_blob_width'] = max(0, int(w['split_blob_width'].get() or 0))
+                        if 'click_delay_entry' in w:
+                            s['click_delay'] = max(0.0, float(w['click_delay_entry'].get() or 0))
                         if s.get('action') == 'Color Count':
                             s['count_expression'] = w['count_expression'].get()
                             s['count_max_cycles'] = int(w['count_max_cycles'].get())
@@ -2104,7 +2129,9 @@ class FlowchartClickerApp:
                             for old_prop in ['counter_value', 'max_count', 'reset_on_start', 'reset_on_reach', 'on_count_reached_action', 'on_count_reached_goto_step', 'on_count_reached_delay']:
                                 s.pop(old_prop, None)
 
-                    elif s['type']=='location': s['key_to_press'] = w['key_press_entry'].get()
+                    elif s['type']=='location':
+                        s['key_to_press'] = w['key_press_entry'].get()
+                        s['click_delay'] = max(0.0, float(w['click_delay_entry'].get() or 0))
                 self.log(f"Applied changes to Step {i+1}.")
             elif item_type == 'note':
                 i = self.selected_items[0]['index']; n = self.annotations[i]
@@ -2210,6 +2237,7 @@ class FlowchartClickerApp:
                 'count_max_cycles': 1,
                 'blob_target': 'Largest Blob',
                 'split_blob_width': 0,
+                'click_delay': 0.0,
             })
         elif step_type == 'png': 
             step_defaults.update({
@@ -2218,7 +2246,7 @@ class FlowchartClickerApp:
                 'count_expression': '>= 1',
                 'count_max_cycles': 1
             })
-        elif step_type == 'location': step_defaults.update({'action': 'Left Click', 'coords':(100,100), 'key_to_press': ''})
+        elif step_type == 'location': step_defaults.update({'action': 'Left Click', 'coords':(100,100), 'key_to_press': '', 'click_delay': 0.0})
         elif step_type == 'logical':
             step_defaults.update({
                 'action': 'Execute', 'logical_type': 'Count', 'counter_value': 0, 'max_count': 0, 'reset_on_start': False, 'reset_on_reach': False,
@@ -2827,9 +2855,9 @@ class FlowchartClickerApp:
                         pyautogui.press(step.get('key_to_press'))
                         self.log_execution(f"Step {self.current_step_index + 1}: Pressed key '{step.get('key_to_press')}'.")
                     else: 
-                        self.execute_action_on_pos(step.get('action'), target_pos)
+                        self.execute_action_on_pos(step.get('action'), target_pos, step)
                 elif step['type'] != 'logical': # For regular PNG and Color
-                    self.execute_action_on_pos(step.get('action'), target_pos)
+                    self.execute_action_on_pos(step.get('action'), target_pos, step)
                 
                 self.handle_flow_control('on_success_action', 'on_success_goto_step')
             else:
@@ -3784,22 +3812,45 @@ class FlowchartClickerApp:
             
         pyautogui.moveTo(rand_x, rand_y, duration=speed, tween=pyautogui.easeOutQuad)
 
-    def execute_varied_click(self,pos):
+    def _settle_before_click(self, seconds):
+        """Wait between moving the pointer and pressing the button.
+
+        Runs on the Tk main thread, exactly as the mouse move already does, so
+        the window will not repaint while it waits. That is the same tradeoff
+        the move makes, and it keeps the click ordered before flow control
+        advances. Returns False if the run was stopped while waiting, so the
+        click is abandoned rather than landing in the wrong place.
+        """
+        remaining = max(0.0, float(seconds or 0))
+        while remaining > 0:
+            if not self.running: return False
+            slice_seconds = min(0.02, remaining)
+            time.sleep(slice_seconds)
+            remaining -= slice_seconds
+        return self.running
+
+    def execute_varied_click(self, pos, click_delay=0.0):
         self.execute_move(pos)
         # Add a check to ensure the click doesn't happen if the move was interrupted
         if not self.running:
             return
+        if not self._settle_before_click(click_delay):
+            return
         hold = max(0.01, self.hold_duration.get() + random.uniform(-self.hold_duration_variance.get(), self.hold_duration_variance.get()))
         pyautogui.click(duration=hold)
 
-    def execute_action_on_pos(self, action, pos):
+    def execute_action_on_pos(self, action, pos, step=None):
+        # Click delay: let the pointer settle where it landed before the button
+        # goes down, for targets that need a moment before they accept a click.
+        click_delay = float((step or {}).get('click_delay', 0) or 0)
         if action == 'Click Object' or action == 'Left Click':
-            self.execute_varied_click(pos)
+            self.execute_varied_click(pos, click_delay)
             # Check running state before logging to avoid extraneous logs after stopping
             if self.running:
                 self.log_execution(f"Step {self.current_step_index + 1}: Left Clicked near {pos} (Speed: ~{self.mouse_speed.get()}s, Hold: ~{self.hold_duration.get()}s).")
         elif action == 'Click Only':
             if not self.running: return
+            if not self._settle_before_click(click_delay): return
             hold = max(0.01, self.hold_duration.get() + random.uniform(-self.hold_duration_variance.get(), self.hold_duration_variance.get()))
             pyautogui.click(duration=hold)
             if self.running:
@@ -3807,6 +3858,7 @@ class FlowchartClickerApp:
         elif action == 'Right Click':
             self.execute_move(pos)
             if not self.running: return # Stop before the click
+            if not self._settle_before_click(click_delay): return
             pyautogui.rightClick()
             if self.running:
                 self.log_execution(f"Step {self.current_step_index + 1}: Right Clicked near {pos}.")

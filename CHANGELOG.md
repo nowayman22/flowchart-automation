@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/CODE_REVIEW.md`; `docs/` is now excluded from ruff.
 
 ### Added
+- **Per-step click delay.** A "Click Delay (s)" field on colour and click steps
+  waits after the pointer arrives and before the button goes down, for targets
+  that need a moment before they accept a click. `0` (the default) clicks
+  immediately, so existing projects are unchanged. It applies to Left Click,
+  Right Click and Click Only, and the field is hidden for Detect and Count
+  actions because those never press a button.
+
+  Stopping during the wait abandons the click rather than letting it land after
+  the run has stopped. Like the mouse move, the wait runs on the Tk main thread,
+  so the window does not repaint while it counts down.
 - **Settings Inject can now change mouse movement**, which it could not at all
   before. The list gains `Mouse Move Speed (s)`, `Mouse Move Mode`,
   `Pixels Per Second`, `Min Move Time (s)` and `Max Move Time (s)`, so a flow can

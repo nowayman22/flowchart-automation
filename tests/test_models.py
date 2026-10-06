@@ -193,3 +193,19 @@ def test_aim_point_survives_the_json_round_trip() -> None:
     restored = step_from_dict(json.loads(json.dumps(step_to_dict(step))))
     assert restored.blob_target == "Center Of All Matches"
     assert restored.split_blob_width == 3
+
+
+def test_click_delay_defaults_to_immediate() -> None:
+    """0 means click as soon as the pointer arrives, i.e. the old behaviour."""
+    assert ColorStep().click_delay == 0.0
+    assert ClickStep().click_delay == 0.0
+
+
+@pytest.mark.parametrize(
+    "step",
+    [ColorStep(click_delay=0.4), ClickStep(click_delay=0.25)],
+    ids=["color", "click"],
+)
+def test_click_delay_survives_the_round_trip(step: BaseStep) -> None:
+    restored = step_from_dict(json.loads(json.dumps(step_to_dict(step))))
+    assert restored.click_delay == step.click_delay
