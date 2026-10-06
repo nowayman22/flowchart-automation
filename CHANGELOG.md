@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/CODE_REVIEW.md`; `docs/` is now excluded from ruff.
 
 ### Added
+- **Global hotkeys on Linux without root.** F2/F3/F4 previously died wherever the
+  `keyboard` library could not register them, which is everywhere on Linux because
+  it refuses to run unless euid is 0. `wayland/hotkeys.py` reads `/dev/input/event*`
+  directly instead, exactly as that library does internally but without the root
+  check, so only membership of the `input` group is needed. It is a passive
+  listener: keys are not grabbed, so the focused application still receives them,
+  matching the original Windows behaviour.
+- The listener ignores devices named `ydotoold`/`virtual`/`uinput`. Those are the
+  app's own output, so reacting to them would let a "press key" step feeding F3
+  re-open the picker.
 - **Wayland support.** The app now runs on Hyprland/Sway and other Wayland
   compositors via `flowchart_automation/wayland/`: screen capture through grim,
   pointer positioning through the compositor (`hyprctl dispatch movecursor`) and

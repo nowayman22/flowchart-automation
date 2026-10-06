@@ -182,6 +182,8 @@ class FlowchartClickerApp:
         
         # --- Hotkey / Capture Mode State ---
         self.f3_mode = None
+        self.hotkey_listener = None
+        self.global_hotkeys = False
         # Picker overlay state (see enter_f3_mode)
         self.picker_overlay = None
         self.picker_pos_label = None
@@ -359,6 +361,10 @@ class FlowchartClickerApp:
             self.update_widget_colors_recursive(child, theme)
 
     def on_closing(self):
+        if getattr(self, 'hotkey_listener', None) is not None:
+            try: self.hotkey_listener.stop()
+            except Exception: pass
+            self.hotkey_listener = None
         self._destroy_picker_overlay()
         self.destroy_all_overlays()
         self._stop_ge_auto_updater()
@@ -3577,17 +3583,55 @@ class FlowchartClickerApp:
         step, z = self.steps[index], self.zoom_factor
         return (step.get('x', 50) + step.get('_width', 180*z)/z/2, step.get('y', 50) + step.get('_height', 60*z)/z/2)
 
+    def _on_global_key(self, name):
+        """Handle a hotkey from the global listener (already on the UI thread)."""
+        if name == 'f2': self.stop() if self.running else self.start()
+        elif name == 'f3':
+            if self.f3_mode is not None: self.capture_from_hotkey()
+        elif name == 'f4': self.select_area_mode()
+        elif name == 'escape':
+            # Only meaningful while the picker or an area overlay is open; never
+            # swallow Escape for other applications (this is a passive listener).
+            if self.f3_mode is not None: self.cancel_f3_mode()
+
+    def _start_evdev_hotkeys(self):
+        """Register global hotkeys by reading /dev/input directly.
+
+        The keyboard library registers global hotkeys the same way but refuses to
+        run unless euid is 0. Reading /dev/input/event* only needs membership of
+        the ``input`` group, so this gives Linux users global F2/F3/F4 without
+        root and without the app having to run as root.
+        """
+        from flowchart_automation.wayland.hotkeys import EvdevHotkeyListener, keyboards_available
+
+        if not keyboards_available(): return None
+        listener = EvdevHotkeyListener(lambda name: self._dispatch_global_key(name))
+        if not listener.start(): return None
+        return listener
+
+    def _dispatch_global_key(self, name):
+        """Hop from the listener thread onto the Tk main loop."""
+        try: self.root.after(0, lambda: self._on_global_key(name))
+        except (tk.TclError, RuntimeError): pass
+
     def setup_hotkeys(self):
+        self.hotkey_listener = None
         try:
             keyboard.add_hotkey('f2',lambda: self.start() if not self.running else self.stop()); keyboard.add_hotkey('f3',self.capture_from_hotkey); keyboard.add_hotkey('f4',self.select_area_mode)
             self.global_hotkeys = True
         except Exception as e:
-            # The keyboard library needs root on Linux, so this is the normal
-            # outcome there rather than an error the user can act on.
+            # The keyboard library needs root on Linux. Fall back to reading
+            # /dev/input directly, which needs only the `input` group.
             self.global_hotkeys = False
-            self.log(f"Global hotkeys unavailable ({e}). Use the on-screen buttons; F2/F3 work while this window has focus.", "orange")
-        # In-window bindings work on every platform, and are what makes the
-        # picker usable on Wayland.
+            try: self.hotkey_listener = self._start_evdev_hotkeys()
+            except Exception: self.hotkey_listener = None
+            if self.hotkey_listener is not None:
+                self.global_hotkeys = True
+                self.log(f"Global hotkeys active via {', '.join(self.hotkey_listener.devices)}.")
+            else:
+                self.log(f"Global hotkeys unavailable ({e}). Add yourself to the 'input' group for F2/F3/F4, or use the on-screen buttons.", "orange")
+        # In-window bindings work on every platform, and cover the case where the
+        # global listener is unavailable.
         self.root.bind("<F2>", lambda e: self.stop() if self.running else self.start())
         self.root.bind("<F3>", lambda e: self.capture_from_hotkey())
         self.root.bind("<Escape>", lambda e: self.cancel_f3_mode())
