@@ -12,8 +12,10 @@ import pytest
 from PIL import Image
 
 from flowchart_automation.wayland import capture as capture_mod
+from flowchart_automation.wayland import compositor as compositor_mod
 from flowchart_automation.wayland import input as input_mod
-from flowchart_automation.wayland.capture import CaptureError, GrimCapture, Monitor
+from flowchart_automation.wayland.capture import CaptureError, GrimCapture
+from flowchart_automation.wayland.compositor import Monitor
 from flowchart_automation.wayland.input import InputError, YdotoolInput
 from flowchart_automation.wayland.keycodes import (
     KEYCODES,
@@ -199,19 +201,19 @@ def test_missing_grim_raises_capture_error(monkeypatch) -> None:
     def boom(cmd, **kwargs):
         raise FileNotFoundError("grim")
 
-    monkeypatch.setattr(capture_mod.subprocess, "run", boom)
+    monkeypatch.setattr(compositor_mod.subprocess, "run", boom)
     with pytest.raises(CaptureError, match="not installed"):
-        capture_mod._run(["grim"])
+        compositor_mod._run(["grim"])
 
 
 def test_nonzero_exit_raises_with_stderr(monkeypatch) -> None:
     monkeypatch.setattr(
-        capture_mod.subprocess,
+        compositor_mod.subprocess,
         "run",
         lambda cmd, **kw: Completed(returncode=1, stderr=b"compositor does not support"),
     )
     with pytest.raises(CaptureError, match="compositor does not support"):
-        capture_mod._run(["grim"])
+        compositor_mod._run(["grim"])
 
 
 def test_empty_image_data_raises(monkeypatch) -> None:
@@ -221,14 +223,14 @@ def test_empty_image_data_raises(monkeypatch) -> None:
 
 
 def test_cursor_position_parses_hyprctl_output(monkeypatch) -> None:
-    monkeypatch.setattr(capture_mod, "_run", lambda cmd, **kw: b"684, 987\n")
-    assert capture_mod.query_cursor_position() == (684, 987)
+    monkeypatch.setattr(compositor_mod, "_run", lambda cmd, **kw: b"684, 987\n")
+    assert compositor_mod.query_cursor_position() == (684, 987)
 
 
 def test_cursor_position_rejects_garbage(monkeypatch) -> None:
-    monkeypatch.setattr(capture_mod, "_run", lambda cmd, **kw: b"not a position")
+    monkeypatch.setattr(compositor_mod, "_run", lambda cmd, **kw: b"not a position")
     with pytest.raises(CaptureError, match="Unexpected cursorpos"):
-        capture_mod.query_cursor_position()
+        compositor_mod.query_cursor_position()
 
 
 def test_query_monitors_orders_by_x(monkeypatch) -> None:
@@ -236,9 +238,29 @@ def test_query_monitors_orders_by_x(monkeypatch) -> None:
         b'[{"name":"DP-2","width":1920,"height":1080,"scale":1.0,"x":2560,"y":0},'
         b'{"name":"eDP-1","width":2560,"height":1600,"scale":1.0,"x":0,"y":0}]'
     )
-    monkeypatch.setattr(capture_mod, "_run", lambda cmd, **kw: payload)
-    monitors = capture_mod.query_monitors()
+    monkeypatch.setattr(compositor_mod, "_run", lambda cmd, **kw: payload)
+    monitors = compositor_mod.query_monitors()
     assert [m.name for m in monitors] == ["eDP-1", "DP-2"]
+
+
+# --- compositor: pointer positioning ----------------------------------------
+
+
+def test_move_cursor_uses_the_movecursor_dispatcher(monkeypatch) -> None:
+    """Positioning must not go through ydotool: its absolute mode mis-maps."""
+    seen: list[list[str]] = []
+    monkeypatch.setattr(compositor_mod, "_run", lambda cmd, **kw: (seen.append(cmd), b"ok")[1])
+
+    compositor_mod.move_cursor(1520, 816)
+    assert seen[0] == ["hyprctl", "dispatch", "movecursor", "1520", "816"]
+
+
+def test_move_cursor_truncates_floats(monkeypatch) -> None:
+    seen: list[list[str]] = []
+    monkeypatch.setattr(compositor_mod, "_run", lambda cmd, **kw: (seen.append(cmd), b"ok")[1])
+
+    compositor_mod.move_cursor(10.7, 20.2)
+    assert seen[0][-2:] == ["10", "20"]
 
 
 # --- input ------------------------------------------------------------------
@@ -285,37 +307,45 @@ def test_unknown_button_raises(ydotool_ready) -> None:
         YdotoolInput().click("pinky")
 
 
-def test_absolute_move_uses_documented_flags(ydotool_ready) -> None:
+@pytest.fixture
+def cursor_moves(monkeypatch):
+    """Capture compositor cursor warps instead of running hyprctl."""
+    moves: list[tuple[int, int]] = []
+    monkeypatch.setattr(input_mod, "move_cursor", lambda x, y: moves.append((int(x), int(y))))
+    return moves
+
+
+def test_move_to_uses_the_compositor_not_ydotool(ydotool_ready, cursor_moves) -> None:
+    """ydotool's absolute mode mis-maps onto the output, so hyprctl positions."""
     YdotoolInput().move_to(100, 200)
-    assert _args(ydotool_ready) == [["mousemove", "--absolute", "-x", "100", "-y", "200"]]
+    assert cursor_moves == [(100, 200)]
+    assert ydotool_ready == [], "positioning must not shell out to ydotool"
 
 
-def test_move_with_duration_interpolates(ydotool_ready, monkeypatch) -> None:
+def test_move_with_duration_interpolates(ydotool_ready, cursor_moves, monkeypatch) -> None:
     backend = YdotoolInput()
     monkeypatch.setattr(backend, "position", lambda: (0, 0))
     monkeypatch.setattr(input_mod.time, "sleep", lambda _s: None)
 
     backend.move_to(100, 100, duration=0.2, tween=lambda n: n)
 
-    moves = _args(ydotool_ready)
-    assert len(moves) > 1, "a timed move should produce intermediate points"
-    # Progressive, never going backwards, ending exactly on target.
-    coords = [int(m[3]) for m in moves]
-    assert coords == sorted(coords)
-    assert 0 < coords[0] < 100
-    assert moves[-1] == ["mousemove", "--absolute", "-x", "100", "-y", "100"]
+    assert len(cursor_moves) > 1, "a timed move should produce intermediate points"
+    xs = [x for x, _ in cursor_moves]
+    assert xs == sorted(xs), "movement should be progressive"
+    assert 0 < xs[0] < 100
+    assert cursor_moves[-1] == (100, 100)
 
 
-def test_move_interpolation_is_capped(ydotool_ready, monkeypatch) -> None:
+def test_move_interpolation_is_capped(ydotool_ready, cursor_moves, monkeypatch) -> None:
     backend = YdotoolInput()
     monkeypatch.setattr(backend, "position", lambda: (0, 0))
     monkeypatch.setattr(input_mod.time, "sleep", lambda _s: None)
 
     backend.move_to(100, 100, duration=60.0, tween=lambda n: n)
-    assert len(_args(ydotool_ready)) <= 40
+    assert len(cursor_moves) <= 40
 
 
-def test_move_falls_back_when_position_unavailable(ydotool_ready, monkeypatch) -> None:
+def test_move_falls_back_when_position_unavailable(cursor_moves, monkeypatch) -> None:
     backend = YdotoolInput()
 
     def fail():
@@ -323,7 +353,27 @@ def test_move_falls_back_when_position_unavailable(ydotool_ready, monkeypatch) -
 
     monkeypatch.setattr(backend, "position", fail)
     backend.move_to(5, 6, duration=0.5)
-    assert _args(ydotool_ready) == [["mousemove", "--absolute", "-x", "5", "-y", "6"]]
+    assert cursor_moves == [(5, 6)]
+
+
+def test_move_rel_resolves_through_absolute_position(cursor_moves, monkeypatch) -> None:
+    backend = YdotoolInput()
+    monkeypatch.setattr(backend, "position", lambda: (100, 100))
+    backend.move_rel(10, -20)
+    assert cursor_moves == [(110, 80)]
+
+
+def test_move_does_not_need_ydotool(monkeypatch, cursor_moves) -> None:
+    """Positioning works without ydotool; only button and key events need it."""
+    monkeypatch.setattr(input_mod, "unavailable_reason", lambda: "ydotool is not installed")
+    YdotoolInput().move_to(50, 60)
+    assert cursor_moves == [(50, 60)]
+
+
+def test_click_errors_when_ydotool_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(input_mod, "unavailable_reason", lambda: "ydotool is not installed")
+    with pytest.raises(InputError, match="not installed"):
+        YdotoolInput().click("left")
 
 
 def test_press_sends_keycode_pairs(ydotool_ready) -> None:
@@ -385,10 +435,12 @@ def test_ready_backend_has_no_reason(monkeypatch) -> None:
     assert input_mod.unavailable_reason() is None
 
 
-def test_input_errors_before_spawning_when_unavailable(monkeypatch) -> None:
+def test_key_and_button_events_error_before_spawning_when_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(input_mod, "unavailable_reason", lambda: "ydotool is not installed")
     with pytest.raises(InputError, match="not installed"):
-        YdotoolInput().move_to(1, 2)
+        YdotoolInput().press("enter")
+    with pytest.raises(InputError, match="not installed"):
+        YdotoolInput().write("hello")
 
 
 def test_socket_path_follows_xdg_runtime_dir(monkeypatch, tmp_path) -> None:

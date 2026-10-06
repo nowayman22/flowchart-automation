@@ -83,7 +83,7 @@ class PyAutoGUIShim(types.ModuleType):
         self.MIDDLE = "middle"
 
         self._capture = GrimCapture()
-        self._input = YdotoolInput(self._capture)
+        self._input = YdotoolInput()
 
     # --- diagnostics -------------------------------------------------------
 

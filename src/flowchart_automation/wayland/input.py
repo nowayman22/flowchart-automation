@@ -8,7 +8,7 @@ kernel's uinput interface, which is why it works everywhere.
 This means ydotool is a hard requirement for the clicking and typing steps:
 
     sudo pacman -S ydotool
-    systemctl --enable-now --user ydotoold
+    systemctl --user enable --now ydotool
 
 ``ydotoold`` must be running; since ydotool v1.0 the client talks to that daemon
 over a unix socket and fails without it.
@@ -16,6 +16,10 @@ over a unix socket and fails without it.
 Button encoding: ydotool takes a single byte where 0x40 is "press", 0x80 is
 "release", 0xC0 is both, and the low bits select the button (0 left, 1 right,
 2 middle). So 0xC0 is a left click and 0xC1 a right click.
+
+Pointer *positioning* is the one thing ydotool is not used for: its absolute mode
+does not map onto screen pixels reliably. The compositor moves the cursor
+instead, and ydotool delivers the button and key events at wherever it landed.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from .compositor import move_cursor, query_cursor_position
 from .keycodes import KEY_LEFTSHIFT, keycode_for, shift_needed
 
 YDOTOOL = "ydotool"
@@ -80,11 +85,11 @@ def unavailable_reason() -> str | None:
 
 
 class YdotoolInput:
-    """Mouse and keyboard output through the ydotool client."""
+    """Mouse and keyboard output through the ydotool client.
 
-    def __init__(self, capture=None) -> None:
-        # Used only to read the current pointer position for smooth movement.
-        self._capture = capture
+    Pointer position is read and set through the compositor, so this needs no
+    capture backend and works even when ydotool is missing.
+    """
 
     # --- low level ---------------------------------------------------------
 
@@ -103,7 +108,12 @@ class YdotoolInput:
             raise InputError(f"ydotool {' '.join(args)} failed: {detail}")
 
     def _mouse_move(self, x: int, y: int) -> None:
-        self._run(["mousemove", "--absolute", "-x", str(int(x)), "-y", str(int(y))])
+        """Position the pointer via the compositor, not ydotool.
+
+        ydotool's absolute mode maps its own device range onto the output and
+        lands in the wrong place (see compositor.move_cursor). hyprctl is exact.
+        """
+        move_cursor(x, y)
 
     def _button(self, button: str, action: int) -> None:
         index = BUTTONS.get(button)
@@ -114,9 +124,7 @@ class YdotoolInput:
     # --- pointer -----------------------------------------------------------
 
     def position(self) -> tuple[int, int]:
-        if self._capture is None:
-            raise InputError("No capture backend available to read the pointer")
-        return self._capture.position()
+        return query_cursor_position()
 
     def move_to(
         self,
@@ -152,7 +160,14 @@ class YdotoolInput:
                 time.sleep(sleep_for)
 
     def move_rel(self, dx: int, dy: int) -> None:
-        self._run(["mousemove", "-x", str(int(dx)), "-y", str(int(dy))])
+        """Move by an offset, resolved through the exact absolute path.
+
+        ydotool's relative mode would avoid the absolute-range problem, but
+        composing it with hyprctl's reading keeps every move in one coordinate
+        space instead of mixing two.
+        """
+        current_x, current_y = self.position()
+        self._mouse_move(current_x + int(dx), current_y + int(dy))
 
     def click(
         self,

@@ -16,9 +16,13 @@ from __future__ import annotations
 from .capture import (
     CaptureError,
     GrimCapture,
-    Monitor,
     grim_available,
+)
+from .compositor import (
+    Monitor,
+    WaylandError,
     hyprctl_available,
+    move_cursor,
     query_cursor_position,
     query_monitors,
 )
@@ -37,6 +41,7 @@ __all__ = [
     "InputError",
     "Monitor",
     "PyAutoGUIShim",
+    "WaylandError",
     "YdotoolInput",
     "already_installed",
     "backend_report",
@@ -46,6 +51,7 @@ __all__ = [
     "install",
     "install_shim",
     "is_wayland_session",
+    "move_cursor",
     "query_cursor_position",
     "query_monitors",
     "unavailable_reason",

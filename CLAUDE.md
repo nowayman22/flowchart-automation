@@ -56,7 +56,9 @@ The project is mid-refactor. Today there are two parallel layers:
 - `detection/ocr.py` - `extract_number`, `preprocess`, `AVAILABLE` flag; sets up Tesseract path on import
 - `execution/actions.py` - `execute_move`, `execute_click`, `execute_action` taking `GlobalSettings`
 - `integrations/ge_client.py` - `fetch_mapping`, `fetch_item_price`, `fetch_all_prices`, `calculate_price` (pure HTTP)
-- `wayland/` - Linux/Wayland backend. `capture.py` (grim + hyprctl, handles HiDPI scaling and clamps regions to the monitor), `input.py` (ydotool, including the 0x40 press / 0x80 release / 0xC0 click byte encoding), `keycodes.py` (pyautogui key names to Linux input-event-codes), `shim.py` (a `PyAutoGUIShim` ModuleType installed into `sys.modules['pyautogui']`).
+- `wayland/` - Linux/Wayland backend. `compositor.py` (hyprctl: monitor geometry, cursor position, `movecursor`), `capture.py` (grim screenshots, HiDPI scaling, clamps regions to the monitor), `input.py` (ydotool button/key events, including the 0x40 press / 0x80 release / 0xC0 click byte encoding), `keycodes.py` (pyautogui key names to Linux input-event-codes), `shim.py` (a `PyAutoGUIShim` ModuleType installed into `sys.modules['pyautogui']`).
+
+Pointer positioning must go through `compositor.move_cursor`, never `ydotool mousemove --absolute`. That command does not map 1:1 onto screen pixels: measured on a 2560x1600 output, x=300 landed at 775, y=800 saturated at the bottom edge, and setting one axis moved the reported position on the other. `hyprctl dispatch movecursor` was exact on every probe. ydotool is only for events at wherever the cursor already is. `YdotoolInput.position()` and `move_to()` therefore need no ydotool and work without it.
 
 ### Platform support
 

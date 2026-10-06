@@ -42,12 +42,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Wayland support.** The app now runs on Hyprland/Sway and other Wayland
-  compositors via `flowchart_automation/wayland/`: screen capture through grim
-  and mouse/keyboard output through ydotool. `install_shim()` places a
+  compositors via `flowchart_automation/wayland/`: screen capture through grim,
+  pointer positioning through the compositor (`hyprctl dispatch movecursor`) and
+  button/key events through ydotool. `install_shim()` places a
   pyautogui-compatible object in `sys.modules` before the legacy module loads,
   so its ~20 existing `pyautogui.*` call sites work unchanged. Input needs
   `ydotool` plus the `ydotoold` daemon (`scripts/setup-wayland.sh` sets both
   up); capture needs only grim.
+- Pointer positioning deliberately does **not** use `ydotool mousemove
+  --absolute`. Measured on a 2560x1600 output it is neither linear nor
+  predictable: asking for x=300 landed at x=775, y=800 saturated at the bottom
+  edge, and setting one axis changed the reported position on the other. The
+  virtual device's absolute range does not match the output, so the compositor
+  moves the cursor instead and ydotool delivers events where it landed. Verified
+  exact on all four corners and through an end-to-end test that clicks a real
+  widget.
 - `packaging/flowchart-automation.desktop` and a PNG icon so the app can be
   launched from Walker.
 - `tests/` with 145 tests covering the v1 migration, JSON round trip, the

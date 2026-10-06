@@ -36,11 +36,13 @@ Python 3.10+ recommended.
 
 The app drives the screen with `pyautogui`, which speaks X11. On a Wayland
 session that library cannot even be imported, so a Wayland backend is used
-instead: **grim** for screen capture and **ydotool** for mouse and keyboard.
+instead: **grim** for screen capture, the compositor (`hyprctl dispatch
+movecursor`) for pointer positioning, and **ydotool** for button and key events.
 
-Capture works as soon as grim is installed (it ships with Omarchy). Input needs
-ydotool, because Wayland blocks one client from injecting events into another;
-ydotool emulates a real input device through the kernel's uinput interface.
+Capture and positioning work as soon as grim is installed (it ships with
+Omarchy). Clicking and typing need ydotool, because Wayland blocks one client
+from injecting events into another; ydotool emulates a real input device through
+the kernel's uinput interface.
 
 ```bash
 ./scripts/setup-wayland.sh     # installs ydotool and starts the ydotoold service
