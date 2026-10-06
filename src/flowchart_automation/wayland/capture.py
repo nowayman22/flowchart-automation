@@ -21,6 +21,7 @@ from __future__ import annotations
 import io
 import shutil
 
+import numpy as np
 from PIL import Image
 
 from .compositor import (
@@ -47,6 +48,7 @@ __all__ = [
     "grim_available",
     "hyprctl_available",
     "move_cursor",
+    "parse_ppm",
     "query_cursor_position",
     "query_monitors",
 ]
@@ -56,11 +58,58 @@ def grim_available() -> bool:
     return shutil.which(GRIM) is not None
 
 
+def parse_ppm(data: bytes) -> np.ndarray:
+    """Parse a binary P6 PPM into an (h, w, 3) uint8 RGB array.
+
+    grim can hand back uncompressed pixels, which skips both grim's PNG encoder
+    and PIL's PNG decoder. Measured on a 2560x1600 output that is the difference
+    between roughly 347 ms and 52 ms per frame. Capture dominates the scan loop
+    (colour detection itself costs about 5 ms), so this decides how well a moving
+    target can be tracked.
+
+    The array is a view onto *data*; copy it before mutating in place.
+    """
+    if not data.startswith(b"P6"):
+        raise CaptureError("grim did not return a P6 PPM")
+
+    fields: list[bytes] = []
+    index = 2
+    while len(fields) < 3:
+        while index < len(data) and data[index : index + 1].isspace():
+            index += 1
+        if index >= len(data):
+            raise CaptureError("truncated PPM header")
+        if data[index : index + 1] == b"#":  # comment line, permitted by the spec
+            while index < len(data) and data[index : index + 1] not in (b"\r", b"\n"):
+                index += 1
+            continue
+        start = index
+        while index < len(data) and not data[index : index + 1].isspace():
+            index += 1
+        fields.append(data[start:index])
+
+    index += 1  # exactly one whitespace byte sits between header and pixels
+
+    try:
+        width, height, maxval = (int(f) for f in fields)
+    except ValueError as exc:
+        raise CaptureError(f"unreadable PPM header: {fields!r}") from exc
+    if maxval != 255:
+        raise CaptureError(f"unsupported PPM maxval {maxval}")
+
+    payload = data[index:]
+    expected = width * height * 3
+    if len(payload) != expected:
+        raise CaptureError(f"PPM payload is {len(payload)} bytes, expected {expected}")
+    return np.frombuffer(payload, dtype=np.uint8).reshape(height, width, 3)
+
+
 class GrimCapture:
     """Screenshot and pixel sampling backed by grim."""
 
     def __init__(self, monitor: Monitor | None = None) -> None:
         self._monitor = monitor
+        self._ppm_supported = True
 
     @property
     def monitor(self) -> Monitor:
@@ -97,6 +146,31 @@ class GrimCapture:
             raise CaptureError("grim returned no image data")
         return Image.open(io.BytesIO(data)).convert("RGB")
 
+    def _capture_ppm(self, geometry: str | None) -> np.ndarray:
+        cmd = [GRIM]
+        if geometry is not None:
+            cmd += ["-g", geometry]
+        cmd += ["-t", "ppm", "-"]
+        data = _run(cmd)
+        if not data:
+            raise CaptureError("grim returned no image data")
+        return parse_ppm(data)
+
+    def screenshot_array(self, region: tuple[int, int, int, int] | None = None) -> np.ndarray:
+        """Capture as an RGB numpy array, taking the fastest path available.
+
+        Prefers grim's uncompressed PPM output. If that is unavailable the PNG
+        path is used and remembered, so a grim built without PPM support costs
+        one failed attempt rather than one per frame.
+        """
+        geometry = self._to_geometry(region) if region is not None else None
+        if self._ppm_supported:
+            try:
+                return self._capture_ppm(geometry)
+            except CaptureError:
+                self._ppm_supported = False
+        return np.asarray(self._capture_png(geometry))
+
     def _to_geometry(self, region: tuple[int, int, int, int]) -> str:
         """Convert a logical (x, y, w, h) region to grim's physical geometry.
 
@@ -126,9 +200,7 @@ class GrimCapture:
 
     def screenshot(self, region: tuple[int, int, int, int] | None = None) -> Image.Image:
         """Capture the screen, or a logical (x, y, w, h) region of it."""
-        if region is None:
-            return self._capture_png(None)
-        return self._capture_png(self._to_geometry(region))
+        return Image.fromarray(self.screenshot_array(region))
 
     def pixel(self, x: int, y: int) -> tuple[int, int, int]:
         """Return the RGB colour at a logical screen coordinate."""

@@ -107,6 +107,15 @@ class PyAutoGUIShim(types.ModuleType):
         """Return a PIL Image, matching pyautogui's return type."""
         return self._capture.screenshot(region)
 
+    def screenshot_array(self, region: tuple[int, int, int, int] | None = None):
+        """Return a raw RGB numpy array instead of a PIL image.
+
+        Not part of the pyautogui API. The app uses it for detection frames,
+        which saves building a PIL image only to convert it straight back to
+        numpy. Callers must feature-detect it, as the real pyautogui lacks it.
+        """
+        return self._capture.screenshot_array(region)
+
     def pixel(self, x: int, y: int) -> tuple[int, int, int]:
         return self._capture.pixel(x, y)
 

@@ -2584,6 +2584,23 @@ class FlowchartClickerApp:
                 if self.detection_thread is threading.current_thread():
                      self.detection_result = ('movement', False, -1) # Indicate error
 
+    def grab_frame(self, area, gray=False):
+        """Capture a screen area straight into an OpenCV array.
+
+        The Wayland backend can hand back pixels without grim's PNG encoder, a
+        PIL decode and a second copy back into numpy. Capture dominates the scan
+        loop (colour detection itself is ~5 ms against ~350 ms of PNG work), so
+        this is the difference between tracking a moving target and lagging it.
+
+        Falls back to pyautogui, which returns a PIL image, on Windows/macOS and
+        on any backend without the fast path.
+        """
+        x1, y1, x2, y2 = area
+        region = (x1, y1, x2 - x1, y2 - y1)
+        fast = getattr(pyautogui, 'screenshot_array', None)
+        rgb = fast(region=region) if fast is not None else np.array(pyautogui.screenshot(region=region))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY if gray else cv2.COLOR_RGB2BGR)
+
     def run_step_executor(self):
         if not self.running: return
         if not (0 <= self.current_step_index < len(self.steps)):
@@ -2609,8 +2626,7 @@ class FlowchartClickerApp:
                     self.log_execution(f"Step {self.current_step_index + 1}: Invalid area for Color Count. Failing.", "red")
                     self.handle_timeout(); return
 
-                screenshot = pyautogui.screenshot(region=(area[0], area[1], w, h))
-                screen_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+                screen_cv = self.grab_frame(area)
                 
                 count = self.find_and_count_color(screen_cv, area[0:2], step)
                 expression_str = step.get('count_expression', '>= 1')
@@ -2658,8 +2674,7 @@ class FlowchartClickerApp:
                     self.log_execution(f"Step {self.current_step_index + 1}: Invalid area for PNG Count. Failing.", "red")
                     self.handle_timeout(); return
 
-                screenshot = pyautogui.screenshot(region=(area[0], area[1], w, h))
-                screen_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+                screen_cv = self.grab_frame(area)
                 
                 count = self.find_and_count_png(screen_cv, area[0:2], step)
                 expression_str = step.get('count_expression', '>= 1')
@@ -2747,8 +2762,7 @@ class FlowchartClickerApp:
                     if w < 1 or h < 1: 
                         self.executor_after_id = self.root.after(int(self.scan_interval.get()*1000),self.run_step_executor); return
                     
-                    screenshot = pyautogui.screenshot(region=(area[0],area[1],w,h))
-                    screen_cv = cv2.cvtColor(np.array(screenshot),cv2.COLOR_RGB2BGR)
+                    screen_cv = self.grab_frame(area)
 
                     if step['type'] == 'png':
                         self.last_detection_info.set(f"PNG: Searching for {os.path.basename(step.get('path'))}...")
@@ -2940,8 +2954,7 @@ class FlowchartClickerApp:
                 self.handle_timeout()
                 return False, True
 
-            screenshot = pyautogui.screenshot(region=(area[0], area[1], w, h))
-            current_frame_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
+            current_frame_cv = self.grab_frame(area, gray=True)
             
             previous_frame = step.get('_previous_frame_for_movement')
 
@@ -2991,8 +3004,7 @@ class FlowchartClickerApp:
             
             self.log_execution(f"Step {self.current_step_index + 1}: Performing OCR in area {area} with expression '{expression_str}'.")
             try:
-                screenshot = pyautogui.screenshot(region=(area[0], area[1], w, h))
-                screen_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+                screen_cv = self.grab_frame(area)
 
                 image_mode = step.get('image_mode', 'Grayscale')
                 gray = cv2.cvtColor(screen_cv, cv2.COLOR_BGR2GRAY)

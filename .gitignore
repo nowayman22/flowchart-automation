@@ -63,6 +63,10 @@ Thumbs.db
 
 # Project-specific
 tesseract/
+# Flowchart exports written by the app's Export JSON button land in the
+# repo root and are user data, not source. Fixtures under tests/ are still
+# tracked, because the rule only matches the top level.
+/*.json
 *.session.json
 *.bak
 logs/

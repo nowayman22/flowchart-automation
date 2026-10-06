@@ -117,6 +117,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer cost the user an entire step.
 
 ### Changed
+- **Screen capture is ~7x faster, which is what makes a moving target
+  trackable.** Capture was ~85% of the scan cycle while colour detection itself
+  costs about 5 ms, so the bottleneck was grim's PNG encoder plus PIL's decoder,
+  not the detection. Frames now come back as uncompressed PPM and are viewed
+  straight into numpy. Measured, capture plus detection:
+
+  | Scan area | Before | Now | Speedup |
+  |---|---|---|---|
+  | full screen 2560x1600 | 485 ms | 68 ms | 7.2x |
+  | 1280x800 | 231 ms | 47 ms | 4.9x |
+  | 640x480 | 100 ms | 34 ms | 2.9x |
+  | 320x240 | 50 ms | 35 ms | 1.4x |
+
+  With the default 0.25 s scan interval a full-screen step ran 3 scans/sec; it
+  now runs about 9, and a 640x480 area with a 0.01 s interval reaches ~23. The
+  PPM parser is byte-identical to PIL's decoder (asserted in tests) and grim's
+  PNG path is kept as a fallback, remembered after one failed attempt, for a
+  grim built without PPM support.
+
+  What remains is a ~33 ms floor from spawning `grim` once per frame; a
+  persistent capture stream (wf-recorder or wl-screenrec) is the next step and
+  would need one of those installed.
+- Detection call sites use a new `grab_frame()` helper that skips the PIL round
+  trip, saving ~12 ms per full-screen frame. The F3 picker and template capture
+  still get PIL images, since they save them to disk.
 - `BaseStep.delay_after` is a property aliasing `on_success.delay`, not a stored
   field. On-disk shape is unchanged: `on_success.delay` already carried it.
 

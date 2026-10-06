@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -167,7 +168,7 @@ def test_screenshot_region_uses_grim_geometry(monkeypatch) -> None:
     image = GrimCapture(MONITOR).screenshot((100, 200, 8, 8))
 
     assert image.size == (8, 8)
-    assert seen[0] == ["grim", "-g", "100,200 8x8", "-t", "png", "-"]
+    assert seen[0] == ["grim", "-g", "100,200 8x8", "-t", "ppm", "-"]
 
 
 def test_full_screenshot_omits_geometry(monkeypatch) -> None:
@@ -536,3 +537,125 @@ def test_is_wayland_session_reads_env(monkeypatch) -> None:
 
     monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
     assert is_wayland_session() is False
+
+
+# --- fast capture path ------------------------------------------------------
+#
+# Capture dominates the scan loop (colour detection is ~5 ms against ~350 ms of
+# PNG work before this), so the uncompressed path is what makes a moving target
+# trackable. It must be exactly equivalent, not merely close.
+
+
+def ppm_bytes(width: int = 4, height: int = 3, colour=(10, 20, 30)) -> bytes:
+    header = f"P6\n{width} {height}\n255\n".encode()
+    return header + bytes(colour) * (width * height)
+
+
+def test_parse_ppm_round_trips_pixels() -> None:
+    image = capture_mod.parse_ppm(ppm_bytes(4, 3, (10, 20, 30)))
+    assert image.shape == (3, 4, 3)
+    assert image.dtype == np.uint8
+    assert tuple(image[1, 2]) == (10, 20, 30)
+
+
+def test_parse_ppm_matches_pil_on_the_same_bytes() -> None:
+    """Must be pixel-identical to the decoder it replaces."""
+    data = ppm_bytes(8, 5, (200, 100, 50))
+    assert np.array_equal(capture_mod.parse_ppm(data), np.array(Image.open(io.BytesIO(data)).convert("RGB")))
+
+
+def test_parse_ppm_handles_comment_lines() -> None:
+    data = b"P6\n# grim was here\n2 2\n255\n" + bytes([1, 2, 3]) * 4
+    assert capture_mod.parse_ppm(data).shape == (2, 2, 3)
+
+
+def test_parse_ppm_tolerates_extra_whitespace_between_fields() -> None:
+    data = b"P6\n\n  2   2\n255\n" + bytes([9, 9, 9]) * 4
+    assert tuple(capture_mod.parse_ppm(data)[0, 0]) == (9, 9, 9)
+
+
+def test_parse_ppm_consumes_exactly_one_whitespace_byte() -> None:
+    """Per the spec only one separates the header from the raster.
+
+    Anything beyond it is image data, so skipping greedily would eat the first
+    pixel. grim writes exactly one newline, and this pins that assumption.
+    """
+    data = b"P6\n2 2\n255\n" + bytes([1, 2, 3]) * 4
+    image = capture_mod.parse_ppm(data)
+    assert tuple(image[0, 0]) == (1, 2, 3)
+
+
+def test_parse_ppm_keeps_leading_whitespace_pixels() -> None:
+    """A first pixel of 0x20 (space) or 0x0A must survive, not be skipped."""
+    data = b"P6\n2 2\n255\n" + bytes([0x20, 0x0A, 0x09]) * 4
+    assert tuple(capture_mod.parse_ppm(data)[0, 0]) == (0x20, 0x0A, 0x09)
+
+
+def test_parse_ppm_rejects_non_ppm() -> None:
+    with pytest.raises(CaptureError, match="P6 PPM"):
+        capture_mod.parse_ppm(b"\x89PNG\r\n\x1a\n")
+
+
+def test_parse_ppm_rejects_truncated_payload() -> None:
+    data = b"P6\n4 4\n255\n" + bytes(10)
+    with pytest.raises(CaptureError, match="payload"):
+        capture_mod.parse_ppm(data)
+
+
+def test_parse_ppm_rejects_truncated_header() -> None:
+    with pytest.raises(CaptureError, match="truncated"):
+        capture_mod.parse_ppm(b"P6\n4")
+
+
+def test_parse_ppm_rejects_16_bit() -> None:
+    with pytest.raises(CaptureError, match="maxval"):
+        capture_mod.parse_ppm(b"P6\n2 2\n65535\n" + bytes(8))
+
+
+def test_capture_uses_ppm_and_skips_png(monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        return ppm_bytes(4, 3)
+
+    monkeypatch.setattr(capture_mod, "_run", fake_run)
+    capture_mod.GrimCapture(MONITOR).screenshot_array((0, 0, 4, 3))
+    assert seen and seen[0][2] == "0,0 4x3"
+    assert "ppm" in seen[0]
+
+
+def test_capture_falls_back_to_png_once(monkeypatch) -> None:
+    """A grim without PPM support costs one failed attempt, not one per frame."""
+    calls: list[str] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd[-2])
+        if "ppm" in cmd:
+            raise CaptureError("unsupported")
+        return png_bytes(4, 3)
+
+    monkeypatch.setattr(capture_mod, "_run", fake_run)
+    capture = capture_mod.GrimCapture(MONITOR)
+    first = capture.screenshot_array((0, 0, 4, 3))
+    second = capture.screenshot_array((0, 0, 4, 3))
+
+    assert first.shape == second.shape == (3, 4, 3)
+    assert calls.count("ppm") == 1, "should stop retrying PPM after it fails"
+
+
+def test_shim_exposes_screenshot_array(monkeypatch) -> None:
+    """Regression: the app feature-detects this and silently falls back without it."""
+    shim = PyAutoGUIShim()
+    assert hasattr(shim, "screenshot_array")
+
+    sentinel = np.zeros((2, 2, 3), np.uint8)
+    monkeypatch.setattr(shim._capture, "screenshot_array", lambda region=None: sentinel)
+    assert shim.screenshot_array((0, 0, 2, 2)) is sentinel
+
+
+def test_shim_screenshot_still_returns_pil(monkeypatch) -> None:
+    """Template capture and the F3 picker still need a PIL image."""
+    shim = PyAutoGUIShim()
+    monkeypatch.setattr(shim._capture, "screenshot", lambda region=None: Image.new("RGB", (3, 3)))
+    assert isinstance(shim.screenshot((0, 0, 3, 3)), Image.Image)

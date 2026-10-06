@@ -60,6 +60,14 @@ The project is mid-refactor. Today there are two parallel layers:
 
 Pointer positioning must go through `compositor.move_cursor`, never `ydotool mousemove --absolute`. That command does not map 1:1 onto screen pixels: measured on a 2560x1600 output, x=300 landed at 775, y=800 saturated at the bottom edge, and setting one axis moved the reported position on the other. `hyprctl dispatch movecursor` was exact on every probe. ydotool is only for events at wherever the cursor already is. `YdotoolInput.position()` and `move_to()` therefore need no ydotool and work without it.
 
+### Scan performance
+
+Capture dominates the scan loop; colour detection costs ~5 ms while a full-screen PNG frame cost ~350 ms. `GrimCapture.screenshot_array` therefore asks grim for uncompressed PPM (`-t ppm`) and views the payload with `np.frombuffer`, skipping both PNG codecs. `parse_ppm` is byte-identical to PIL's decoder and is asserted against it; the PNG path remains as a fallback and `_ppm_supported` remembers a failure so a grim without PPM costs one attempt, not one per frame. Anything on the per-frame path must call `screenshot_array`, not `screenshot()`, which builds a PIL image that callers would convert straight back to numpy.
+
+Measured per scan (capture + detect): full screen 2560x1600 was 485 ms, now 68 ms. The remaining floor is ~33 ms from spawning `grim` once per frame, so shrinking the scan area below roughly 640x480 no longer helps. Beating that needs a persistent capture stream rather than a process per frame.
+
+Per-frame work runs on the Tk main thread in `run_step_executor`, so a slow capture freezes the UI for its duration.
+
 ### Platform support
 
 `pyautogui` is X11/Windows only and **cannot be imported at all on Wayland**: it calls `size()` at import time and raises `Xlib.error.XauthError`. `wayland.install_shim()` must therefore run before anything imports pyautogui, which is why `__main__.py` calls it first. On Wayland, capture goes through grim and input through ydotool, so input requires both the `ydotool` package and a running `ydotoold` daemon (`scripts/setup-wayland.sh`). Without them the editor and detection still work and input calls raise `InputError` with the fix in the message.
