@@ -19,10 +19,11 @@ _pytesseract = None
 def _init() -> None:
     global AVAILABLE, _pytesseract
     try:
+        import os
+
         import pytesseract  # type: ignore[import]
 
         from ..util.paths import get_base_path
-        import os
 
         portable = os.path.join(get_base_path(), "tesseract", "tesseract.exe")
         if os.path.exists(portable):

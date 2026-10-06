@@ -36,9 +36,10 @@ def compare_frames(
         MovementResult with the change percentage and whether the scene is still.
     """
     if previous.shape != current.shape:
-        raise ValueError(
-            f"Frame shape mismatch: {previous.shape} vs {current.shape}"
-        )
+        raise ValueError(f"Frame shape mismatch: {previous.shape} vs {current.shape}")
+    if previous.size == 0:
+        # cv2.absdiff returns None for empty input, so bail out before it.
+        return MovementResult(change_percentage=0.0, is_still=True)
     diff = cv2.absdiff(previous, current)
     _, thresholded = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
     non_zero = int(np.count_nonzero(thresholded))

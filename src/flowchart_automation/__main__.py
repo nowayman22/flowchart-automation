@@ -16,7 +16,7 @@ def main() -> None:
     if _project_root not in sys.path:
         sys.path.insert(0, _project_root)
 
-    from FlowchartClickerApp66 import FlowchartClickerApp  # noqa: E402
+    from FlowchartClickerApp66 import FlowchartClickerApp
 
     root = tk.Tk()
     app = FlowchartClickerApp(root)

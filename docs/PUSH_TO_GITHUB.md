@@ -22,9 +22,9 @@ Open a terminal in the unzipped `flowchart-automation/` folder and run:
 git init
 git add .
 git commit -m "Initial commit: Rev. 65 + scaffold"
-git branch -M main
+git branch -M master
 git remote add origin https://github.com/nowayman22/flowchart-automation.git
-git push -u origin main
+git push -u origin master
 ```
 
 If 2FA / personal-access-tokens trip you up on the `push`, GitHub's docs walk through it: <https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens>. The short version: generate a fine-grained PAT with `Contents: Read and write` for this repo, paste it as the password when git prompts.
@@ -45,10 +45,10 @@ The `build-windows` job in `.github/workflows/ci.yml` triggers on tags starting 
 A few things worth doing in the GitHub web UI:
 
 - **Settings → General → Features:** turn off Wiki and Projects unless you want them.
-- **Settings → Branches → Branch protection rules:** add a rule for `main` requiring CI to pass before merging. Optional but recommended once you're past v0.66.0.
+- **Settings → Branches → Branch protection rules:** add a rule for `master` requiring CI to pass before merging. Optional but recommended once you're past v0.66.0.
 - **About panel** (top-right of the repo page → ⚙): paste the description, add topics like `automation`, `tkinter`, `opencv`, `pyautogui`, `flowchart`.
 - **Pin issues** for the Phase 1 / Phase 2 tasks from `docs/CODE_REVIEW.md` so the roadmap is visible.
 
 ## 5. After it's pushed
 
-The CI workflow will run on every push to `main` and every PR. The first run will fail on `ruff check .` because the legacy `FlowchartClickerApp66.py` has style issues — `pyproject.toml` already excludes it from ruff (`extend-exclude`), so you should actually be fine. If anything else fails, paste the action log and I'll help debug.
+The CI workflow will run on every push to `master` and every PR. The first run will fail on `ruff check .` because the legacy `FlowchartClickerApp66.py` has style issues — `pyproject.toml` already excludes it from ruff (`extend-exclude`), so you should actually be fine. If anything else fails, paste the action log and I'll help debug.

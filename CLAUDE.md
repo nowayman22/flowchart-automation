@@ -44,11 +44,11 @@ The project is mid-refactor. Today there are two parallel layers:
 - `__init__.py` - exposes `__version__`
 - `__main__.py` - entry point shim that imports `FlowchartClickerApp` from the legacy file during migration
 - `models.py` - typed dataclasses replacing the free-form step dicts in the legacy file
-- `persistence.py` - `save(path, project)` / `load(path) -> Project` with v1->v2 migration
+- `persistence.py` - `save(path, project)` / `load(path, strict=False) -> Project` with v1->v2 migration. Unreadable steps land in `Project.load_warnings` and emit a `UserWarning`; they are never dropped silently.
 - `util/paths.py` - `get_base_path()` (portable/PyInstaller aware)
 - `util/expressions.py` - `evaluate(expression_str, value)` (the `>= 5` evaluator used in three places)
 - `detection/color.py` - `find_color_hsv`, `find_color_rgb`, `count_color` (pure functions)
-- `detection/png.py` - `find_png`, `count_png`, `load_template`, `find_template_in_region` (pure, cache-dict based)
+- `detection/png.py` - `find_png`, `count_png`, `load_template`, `find_template_in_region`, `count_distinct_rects` (pure, cache-dict based). `count_distinct_rects` replaces `cv2.groupRectangles`, which OpenCV 5 removed.
 - `detection/movement.py` - `compare_frames(previous, current, tolerance) -> MovementResult`
 - `detection/ocr.py` - `extract_number`, `preprocess`, `AVAILABLE` flag; sets up Tesseract path on import
 - `execution/actions.py` - `execute_move`, `execute_click`, `execute_action` taking `GlobalSettings`
@@ -56,11 +56,15 @@ The project is mid-refactor. Today there are two parallel layers:
 
 ### Data model (`models.py`)
 
-Steps use a discriminated union: `Step = ColorStep | PngStep | ClickStep | LogicalStep`. All four inherit from `BaseStep`, which holds common fields (`name`, `x/y` canvas position, `delay_after`, `on_success: FlowBranch`, `on_timeout: FlowBranch`, `timeout`, `last_run`).
+Steps use a discriminated union: `Step = ColorStep | PngStep | ClickStep | LogicalStep`. All four inherit from `BaseStep`, which holds common fields (`name`, `x/y` canvas position, `on_success: FlowBranch`, `on_timeout: FlowBranch`, `timeout`, `last_run`).
 
-`FlowBranch` describes where execution goes after a step completes (`action`, `goto_step`, `delay`). `Area` is a screen rectangle in absolute pixels. `Project` is the top-level container (`steps`, `annotations`, `GlobalSettings`, `schema_version = 2`).
+`FlowBranch` describes where execution goes after a step completes (`action`, `goto_step`, `delay`). The post-step delay lives on the branch, so success and timeout can be paced independently. `step.delay_after` still reads and writes, but it is a property aliasing `on_success.delay`, not a stored field. `Area` is a screen rectangle in absolute pixels. `Project` is the top-level container (`steps`, `annotations`, `globals`, `schema_version`, plus runtime-only `load_warnings`).
 
-JSON round-trip is explicit via `step_to_dict` / `step_from_dict`. Bump `SCHEMA_VERSION` when the on-disk shape changes.
+JSON round-trip is explicit via `step_to_dict` / `step_from_dict`. `step_from_dict` never mutates its input, restores `rgb`/`coords` to tuples, ignores unknown keys with a warning (or raises under `strict=True`). Bump `SCHEMA_VERSION` when the on-disk shape changes.
+
+### Tests (`tests/`)
+
+`tests/fixtures/legacy_v1_project.json` is a v1 export containing all four step types; `test_persistence.py` drives the migration through it. Detection tests build synthetic numpy images, so they need no image fixtures. Prefer asserting against a real captured value over a guess: `cv2.contourArea` returns 361 for a 20x20 filled rect, and centroids are truncated to `int`.
 
 ### Remaining work (see `docs/CODE_REVIEW.md`)
 

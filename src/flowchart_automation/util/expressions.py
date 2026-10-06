@@ -23,9 +23,7 @@ def evaluate(expression_str: str, value: int | float) -> bool:
     """
     parts = expression_str.split()
     if len(parts) != 2:
-        raise ValueError(
-            f"Expression must be '<op> <number>' (got {expression_str!r})"
-        )
+        raise ValueError(f"Expression must be '<op> <number>' (got {expression_str!r})")
     op_str, rhs_str = parts
     op = _OPS.get(op_str)
     if op is None:

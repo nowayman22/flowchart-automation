@@ -85,7 +85,7 @@ def find_template_in_region(
     template, mask = template_data
     if template is None:
         return None
-    if any(s < t for s, t in zip(screen_processed.shape, template.shape)):
+    if any(s < t for s, t in zip(screen_processed.shape, template.shape, strict=False)):
         return None
 
     h, w = template.shape[:2]
@@ -167,6 +167,46 @@ def find_png(
     return best_pos, best_conf if best_conf > -1 else 0.0
 
 
+def _boxes_are_adjacent(a: list[int], b: list[int], eps: float) -> bool:
+    """True if two [x, y, w, h] boxes touch once each is grown by eps."""
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return not (
+        ax + aw + aw * eps < bx - bw * eps
+        or bx + bw + bw * eps < ax - aw * eps
+        or ay + ah + ah * eps < by - bh * eps
+        or by + bh + bh * eps < ay - ah * eps
+    )
+
+
+def count_distinct_rects(rects: list[list[int]], eps: float = 0.2) -> int:
+    """Count distinct detections by merging touching rectangles.
+
+    Stands in for ``cv2.groupRectangles``, which OpenCV 5 removed. A single
+    template instance produces a cluster of above-threshold rectangles around
+    the true location; overlapping clusters collapse to one count.
+    """
+    if not rects:
+        return 0
+
+    parent = list(range(len(rects)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            if _boxes_are_adjacent(rects[i], rects[j], eps):
+                root_i, root_j = find(i), find(j)
+                if root_i != root_j:
+                    parent[root_j] = root_i
+
+    return len({find(i) for i in range(len(rects))})
+
+
 def count_png(
     screen_cv: np.ndarray,
     offset: tuple[int, int],
@@ -186,7 +226,7 @@ def count_png(
         if template is None:
             continue
         h, w = template.shape[:2]
-        if any(s < t for s, t in zip(screen_processed.shape, template.shape)):
+        if any(s < t for s, t in zip(screen_processed.shape, template.shape, strict=False)):
             continue
 
         if mask is not None:
@@ -196,11 +236,7 @@ def count_png(
             res = cv2.matchTemplate(screen_processed, template, cv2.TM_CCOEFF_NORMED)
             locs = np.where(res >= threshold)
 
-        for pt in zip(*locs[::-1]):
-            all_rects.append([pt[0], pt[1], w, h])
+        for pt in zip(*locs[::-1], strict=False):
+            all_rects.append([int(pt[0]), int(pt[1]), w, h])
 
-    if not all_rects:
-        return 0
-
-    grouped, _ = cv2.groupRectangles(all_rects, groupThreshold=1, eps=0.2)
-    return len(grouped)
+    return count_distinct_rects(all_rects)

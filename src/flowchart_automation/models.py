@@ -18,6 +18,7 @@ small per-type methods.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Literal
@@ -27,10 +28,11 @@ SCHEMA_VERSION = 2  # bump when the on-disk shape changes
 
 # --- enums & unions -------------------------------------------------------
 
+
 class StepKind(str, Enum):
     COLOR = "color"
     PNG = "png"
-    LOCATION = "location"   # click / keypress
+    LOCATION = "location"  # click / keypress
     LOGICAL = "logical"
 
 
@@ -52,9 +54,11 @@ ImageMode = Literal["Grayscale", "Color", "Binary (B&W)"]
 
 # --- shared primitives ----------------------------------------------------
 
+
 @dataclass
 class Area:
     """Rectangular screen region in absolute pixels."""
+
     x1: int
     y1: int
     x2: int
@@ -75,6 +79,7 @@ class Area:
 @dataclass
 class FlowBranch:
     """Where execution goes after a step finishes (success or timeout)."""
+
     action: FlowAction = "Next Step"
     goto_step: int = 1  # 1-indexed, matches the UI
     delay: float = 0.0
@@ -89,19 +94,34 @@ class LastRun:
 
 # --- steps -----------------------------------------------------------------
 
+
 @dataclass
 class BaseStep:
     """Fields every step kind has."""
+
     name: str = "Unnamed"
     x: float = 50.0
     y: float = 50.0
-    delay_after: float = 1.0
     enable_logging: bool = True
     show_area: bool = False
     on_success: FlowBranch = field(default_factory=FlowBranch)
     on_timeout: FlowBranch = field(default_factory=lambda: FlowBranch(action="Stop"))
     timeout: float = 0.0
     last_run: LastRun = field(default_factory=LastRun)
+
+    @property
+    def delay_after(self) -> float:
+        """Delay applied after this step on the success branch.
+
+        The delay lives on the branch (``on_success.delay``) so success and
+        timeout can be paced independently. This property is the compatibility
+        alias for the v1 name, kept so call sites read naturally.
+        """
+        return self.on_success.delay
+
+    @delay_after.setter
+    def delay_after(self, value: float) -> None:
+        self.on_success.delay = value
 
 
 @dataclass
@@ -134,6 +154,7 @@ class PngStep(BaseStep):
 @dataclass
 class ClickStep(BaseStep):
     """Unconditional click or keypress at a fixed location."""
+
     kind: Literal[StepKind.LOCATION] = StepKind.LOCATION
     action: str = "Left Click"
     coords: tuple[int, int] = (100, 100)
@@ -172,6 +193,7 @@ Step = ColorStep | PngStep | ClickStep | LogicalStep
 
 # --- annotations & project --------------------------------------------------
 
+
 @dataclass
 class Annotation:
     x: float = 60.0
@@ -194,9 +216,9 @@ class MouseSettings:
 
 @dataclass
 class VarianceSettings:
-    location_offset: int = 4      # ±px
+    location_offset: int = 4  # ±px
     speed_variance: float = 0.06  # ±s
-    hold_variance: float = 0.03   # ±s
+    hold_variance: float = 0.03  # ±s
 
 
 @dataclass
@@ -225,6 +247,9 @@ class Project:
     annotations: list[Annotation] = field(default_factory=list)
     globals: GlobalSettings = field(default_factory=GlobalSettings)
     schema_version: int = SCHEMA_VERSION
+    # Populated by persistence.load() when something could not be read.
+    # Runtime-only: never written to disk.
+    load_warnings: list[str] = field(default_factory=list)
 
 
 # --- JSON round-trip --------------------------------------------------------
@@ -239,6 +264,10 @@ _STEP_BY_KIND = {
     StepKind.LOGICAL: LogicalStep,
 }
 
+# Fields declared as ``tuple`` on the model but serialised as JSON arrays,
+# mapped to the arity they must come back with.
+_TUPLE_FIELDS = {"rgb": 3, "coords": 2}
+
 
 def step_to_dict(step: Step) -> dict[str, Any]:
     data = asdict(step)
@@ -246,19 +275,74 @@ def step_to_dict(step: Step) -> dict[str, Any]:
     data["kind"] = step.kind.value
     if isinstance(step, LogicalStep):
         data["logical_type"] = step.logical_type.value
+    # asdict() preserves tuples, but json.dumps() writes them as arrays and
+    # json.loads() reads them back as lists. Normalise here so the on-disk
+    # shape is identical either way.
+    for key in _TUPLE_FIELDS:
+        if isinstance(data.get(key), tuple):
+            data[key] = list(data[key])
     return data
 
 
-def step_from_dict(data: dict[str, Any]) -> Step:
-    kind = StepKind(data.pop("kind"))
-    cls = _STEP_BY_KIND[kind]
-    # nested dataclass fields need rebuilding
-    data["on_success"] = FlowBranch(**data.get("on_success", {}))
-    data["on_timeout"] = FlowBranch(**data.get("on_timeout", {}))
-    if "last_run" in data and isinstance(data["last_run"], dict):
-        data["last_run"] = LastRun(**data["last_run"])
-    if "area" in data and data["area"] is not None and isinstance(data["area"], dict):
-        data["area"] = Area(**data["area"])
+def _coerce_step_fields(data: dict[str, Any], cls: type) -> None:
+    """Rebuild nested dataclasses and restore tuple fields, in place."""
+    for key, dc in (
+        ("on_success", FlowBranch),
+        ("on_timeout", FlowBranch),
+        ("last_run", LastRun),
+        ("area", Area),
+    ):
+        value = data.get(key)
+        if isinstance(value, dict):
+            data[key] = dc(**{k: v for k, v in value.items() if k in dc.__dataclass_fields__})
+        elif key == "last_run" and value is None:
+            data[key] = LastRun()
+
     if cls is LogicalStep and "logical_type" in data:
         data["logical_type"] = LogicalKind(data["logical_type"])
+
+    for key, arity in _TUPLE_FIELDS.items():
+        value = data.get(key)
+        if isinstance(value, list) and len(value) == arity:
+            data[key] = tuple(value)
+
+
+def step_from_dict(data: dict[str, Any], *, strict: bool = False) -> Step:
+    """Rebuild a step from its JSON dict, tolerating unknown keys.
+
+    The input dict is never mutated. Unknown keys are reported through
+    ``warnings.warn`` and dropped rather than raising, so one bad field
+    cannot cost the user an entire step. Pass ``strict=True`` to raise
+    ``ValueError`` instead.
+    """
+    data = dict(data)  # never mutate the caller's dict
+    if "kind" not in data:
+        raise ValueError("step is missing the required 'kind' field")
+
+    kind = StepKind(data.pop("kind"))
+    cls = _STEP_BY_KIND[kind]
+
+    # v2 files written before the delay moved onto FlowBranch carry a
+    # step-level delay_after. An explicit branch delay wins.
+    legacy_delay = data.pop("delay_after", None)
+    if legacy_delay is not None:
+        success = data.get("on_success")
+        if not isinstance(success, dict):
+            success = {}
+        success.setdefault("delay", legacy_delay)
+        data["on_success"] = success
+
+    _coerce_step_fields(data, cls)
+
+    known = set(cls.__dataclass_fields__)
+    unknown = sorted(set(data) - known)
+    if unknown:
+        message = f"{cls.__name__}: ignoring unknown field(s) {unknown}"
+        if strict:
+            raise ValueError(message)
+        warnings.warn(message, UserWarning, stacklevel=2)
+        for key in unknown:
+            del data[key]
+
+    data["kind"] = kind
     return cls(**data)

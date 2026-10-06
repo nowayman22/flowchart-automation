@@ -32,7 +32,9 @@ def _color_mask_rgb(
     tolerance: int,
 ) -> np.ndarray:
     lower = np.array([max(0, rgb[2] - tolerance), max(0, rgb[1] - tolerance), max(0, rgb[0] - tolerance)])
-    upper = np.array([min(255, rgb[2] + tolerance), min(255, rgb[1] + tolerance), min(255, rgb[0] + tolerance)])
+    upper = np.array(
+        [min(255, rgb[2] + tolerance), min(255, rgb[1] + tolerance), min(255, rgb[0] + tolerance)]
+    )
     return cv2.inRange(img_bgr, lower, upper)
 
 

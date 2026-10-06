@@ -14,6 +14,7 @@ v1 save format characteristics:
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -22,18 +23,16 @@ from .models import (
     SCHEMA_VERSION,
     Annotation,
     Area,
-    FlowBranch,
     GlobalSettings,
     GridSettings,
-    LastRun,
     MouseSettings,
     Project,
     Step,
+    StepKind,
     VarianceSettings,
     step_from_dict,
     step_to_dict,
 )
-
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -51,8 +50,13 @@ def save(path: str | Path, project: Project) -> None:
     Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def load(path: str | Path) -> Project:
-    """Load a project from *path*, migrating from v1 if necessary."""
+def load(path: str | Path, *, strict: bool = False) -> Project:
+    """Load a project from *path*, migrating from v1 if necessary.
+
+    Steps that cannot be parsed are skipped, but never silently: each failure
+    is recorded on ``Project.load_warnings`` and re-emitted via
+    ``warnings.warn``. Pass ``strict=True`` to raise instead.
+    """
     raw: dict[str, Any] = json.loads(Path(path).read_text(encoding="utf-8"))
     version = raw.get("schema_version", 1)
     if version < SCHEMA_VERSION:
@@ -60,17 +64,32 @@ def load(path: str | Path) -> Project:
 
     globals_ = _parse_global_settings(raw.get("global_settings", {}))
     steps: list[Step] = []
-    for s in raw.get("steps", []):
+    load_warnings: list[str] = []
+    raw_steps = raw.get("steps", [])
+    for index, s in enumerate(raw_steps):
         try:
-            steps.append(step_from_dict(dict(s)))
-        except Exception:
-            pass  # skip steps that can't be parsed after migration
+            steps.append(step_from_dict(s, strict=strict))
+        except Exception as exc:
+            message = (
+                f"step {index + 1} of {len(raw_steps)} "
+                f"({s.get('kind', s.get('type', 'unknown'))}) was skipped: {exc}"
+            )
+            if strict:
+                raise ValueError(message) from exc
+            load_warnings.append(message)
+            warnings.warn(message, UserWarning, stacklevel=2)
 
     annotations = [
         Annotation(**{k: v for k, v in a.items() if k in Annotation.__dataclass_fields__})
         for a in raw.get("annotations", [])
     ]
-    return Project(steps=steps, annotations=annotations, globals=globals_, schema_version=SCHEMA_VERSION)
+    return Project(
+        steps=steps,
+        annotations=annotations,
+        globals=globals_,
+        schema_version=SCHEMA_VERSION,
+        load_warnings=load_warnings,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +107,9 @@ def _parse_global_settings(data: dict[str, Any]) -> GlobalSettings:
         mouse=MouseSettings(**{k: v for k, v in mouse_d.items() if k in MouseSettings.__dataclass_fields__})
         if mouse_d
         else MouseSettings(),
-        variance=VarianceSettings(**{k: v for k, v in variance_d.items() if k in VarianceSettings.__dataclass_fields__})
+        variance=VarianceSettings(
+            **{k: v for k, v in variance_d.items() if k in VarianceSettings.__dataclass_fields__}
+        )
         if variance_d
         else VarianceSettings(),
         grid=GridSettings(**{k: v for k, v in grid_d.items() if k in GridSettings.__dataclass_fields__})
@@ -165,16 +186,25 @@ def _migrate_v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
 
         s["kind"] = step_type or "png"
 
-        # Migrate flat flow-branch keys to nested dicts
+        # v1 logical steps carry action='Execute'. LogicalStep has no such
+        # field, so leaving it in place makes the constructor raise and costs
+        # the user the whole step.
+        if s["kind"] == StepKind.LOGICAL.value:
+            s.pop("action", None)
+
+        # v1 had a single delay_after, applied after the step on whichever
+        # branch was taken (see handle_flow_control in FlowchartClickerApp66.py).
+        # v2 paces the branches independently, so seed both from that one value.
+        delay_after = s.pop("delay_after", 1.0)
         s["on_success"] = {
             "action": s.pop("on_success_action", "Next Step"),
             "goto_step": s.pop("on_success_goto_step", 1),
-            "delay": s.pop("delay_after", 1.0),
+            "delay": delay_after,
         }
         s["on_timeout"] = {
             "action": s.pop("on_timeout_action", "Stop"),
             "goto_step": s.pop("on_timeout_goto_step", 1),
-            "delay": 0.0,
+            "delay": delay_after,
         }
 
         # Migrate last_run_info
@@ -191,11 +221,23 @@ def _migrate_v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
             s["area"] = {"x1": area[0], "y1": area[1], "x2": area[2], "y2": area[3]}
 
         # Drop runtime / UI-only fields
-        for key in ("_width", "_height", "_previous_frame_for_movement", "_count_current_cycle",
-                    "timer_start_time", "last_cycle_time", "on_count_reached_action",
-                    "on_count_reached_goto_step", "on_count_reached_delay",
-                    "ge_inject_name", "ge_inject_field", "ge_inject_quantity", "ge_inject_refresh",
-                    "inject_setting_name", "inject_setting_value"):
+        for key in (
+            "_width",
+            "_height",
+            "_previous_frame_for_movement",
+            "_count_current_cycle",
+            "timer_start_time",
+            "last_cycle_time",
+            "on_count_reached_action",
+            "on_count_reached_goto_step",
+            "on_count_reached_delay",
+            "ge_inject_name",
+            "ge_inject_field",
+            "ge_inject_quantity",
+            "ge_inject_refresh",
+            "inject_setting_name",
+            "inject_setting_value",
+        ):
             s.pop(key, None)
 
         migrated_steps.append(s)
