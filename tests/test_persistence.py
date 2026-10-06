@@ -313,3 +313,27 @@ def test_unknown_global_setting_keys_are_ignored(tmp_path: Path) -> None:
     )
     project = persistence.load(p)
     assert project.globals.scan_interval == 0.5
+
+
+def test_aim_point_settings_survive_save_and_load(tmp_path: Path) -> None:
+    """Colour targeting options are part of the on-disk format."""
+    project = Project(
+        steps=[ColorStep(name="c", blob_target="Nearest Blob To Area Center", split_blob_width=2)]
+    )
+    out = tmp_path / "aim.json"
+    persistence.save(out, project)
+    reloaded = persistence.load(out)
+
+    color = reloaded.steps[0]
+    assert isinstance(color, ColorStep)
+    assert color.blob_target == "Nearest Blob To Area Center"
+    assert color.split_blob_width == 2
+
+
+def test_v1_colour_steps_get_the_default_aim_point() -> None:
+    """Old saves predate the option and must still aim at the largest blob."""
+    project = persistence.load(LEGACY_V1)
+    color = project.steps[0]
+    assert isinstance(color, ColorStep)
+    assert color.blob_target == "Largest Blob"
+    assert color.split_blob_width == 0

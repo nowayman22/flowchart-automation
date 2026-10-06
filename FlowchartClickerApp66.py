@@ -16,6 +16,9 @@ try:
 except Exception as _shim_error:  # not installed, or not a Wayland session
     print(f"Note: Wayland input backend unavailable ({_shim_error}).")
 
+# Shared colour targeting (aim point, blob splitting) used by the executor.
+from flowchart_automation.detection import color as flowchart_color
+
 import pyautogui
 import time
 import keyboard
@@ -1716,8 +1719,15 @@ class FlowchartClickerApp:
             tk.Label(details_lf, text="Min Area (px):").grid(row=1, column=2, sticky='w', padx=(10,2)); w=tk.Entry(details_lf, width=7); w.insert(0, str(step.get('min_pixel_area', 10))); w.grid(row=1, column=3, sticky='w', padx=2); self.properties_widgets['min_pixel_area'] = w
             
             tk.Label(details_lf, text="Color Space:").grid(row=2, column=0, sticky='w', pady=5); w = tk.StringVar(value=step.get('color_space', 'HSV')); self.properties_widgets['color_space'] = w; 
-            tk.OptionMenu(details_lf, w, 'HSV', 'RGB').grid(row=2, column=1, columnspan=3, sticky='ew')
+            tk.OptionMenu(details_lf, w, 'HSV', 'RGB').grid(row=2, column=1, sticky='ew')
             
+            # Where to click when more than one blob matches the colour.
+            tk.Label(details_lf, text="Aim Point:").grid(row=2, column=2, sticky='w', padx=(10,2)); w = tk.StringVar(value=step.get('blob_target', 'Largest Blob')); self.properties_widgets['blob_target'] = w
+            aim_menu = tk.OptionMenu(details_lf, w, 'Largest Blob', 'Center Of All Matches', 'Nearest Blob To Area Center'); aim_menu.grid(row=2, column=3, sticky='ew'); self.properties_widgets['blob_target_menu'] = aim_menu
+
+            tk.Label(details_lf, text="Split Blobs (px):").grid(row=5, column=0, sticky='w', pady=(5,0)); w = tk.Entry(details_lf, width=7); w.insert(0, str(step.get('split_blob_width', 0))); w.grid(row=5, column=1, sticky='w', padx=2, pady=(5,0)); self.properties_widgets['split_blob_width'] = w
+            tk.Label(details_lf, text="0 = off. Cuts thin joins that merge blobs.", font=('Helvetica', 8)).grid(row=5, column=2, columnspan=2, sticky='w', pady=(5,0))
+
             area_btn_frame = tk.Frame(details_lf); area_btn_frame.grid(row=3, column=0, columnspan=4, sticky='w', pady=(5,0))
             area_text = f"Area: {step['area'][2]-step['area'][0]}x{step['area'][3]-step['area'][1]}" if step.get('area') else "Area: Global"
             w_area_btn = tk.Button(area_btn_frame, text=area_text, command=self.select_area_for_step, font=('Helvetica', 9), relief=tk.FLAT); w_area_btn.pack(side=tk.LEFT, padx=(0, 2)); self.properties_widgets['area_btn'] = w_area_btn
@@ -1732,9 +1742,13 @@ class FlowchartClickerApp:
                 else:
                     area_btn_frame.grid()
                     pixel_coords_label.pack_forget()
-                
+
+                # Aim point and blob splitting only apply to area detection.
                 for widget in details_lf.grid_slaves():
-                    if widget.grid_info()['row'] == 1 and widget.grid_info()['column'] in [2, 3]:
+                    info = widget.grid_info()
+                    if not info: continue
+                    row, col = int(info['row']), int(info['column'])
+                    if (row in (1, 2) and col in (2, 3)) or row == 5:
                         widget.grid_remove() if is_pixel_mode else widget.grid()
 
 
@@ -2046,6 +2060,8 @@ class FlowchartClickerApp:
                         s['pixel_detect_enabled'] = w['pixel_detect_enabled'].get()
                         if not s['pixel_detect_enabled']:
                             s['min_pixel_area'] = int(w['min_pixel_area'].get())
+                            s['blob_target'] = w['blob_target'].get()
+                            s['split_blob_width'] = max(0, int(w['split_blob_width'].get() or 0))
                         if s.get('action') == 'Color Count':
                             s['count_expression'] = w['count_expression'].get()
                             s['count_max_cycles'] = int(w['count_max_cycles'].get())
@@ -2158,6 +2174,8 @@ class FlowchartClickerApp:
                 'min_pixel_area': 10,
                 'count_expression': '>= 1',
                 'count_max_cycles': 1,
+                'blob_target': 'Largest Blob',
+                'split_blob_width': 0,
             })
         elif step_type == 'png': 
             step_defaults.update({
@@ -3927,30 +3945,18 @@ class FlowchartClickerApp:
         return thresh
 
     def find_color_on_screen_hsv(self,img_bgr,offset,step):
-        rgb = step.get('rgb', (255,0,0)); tolerance = step.get('tolerance', 2); min_area = step.get('min_pixel_area', 10)
-        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV); target_hsv = cv2.cvtColor(np.uint8([[list(reversed(rgb))]]), cv2.COLOR_BGR2HSV)[0][0]
-        h, s, v = int(target_hsv[0]), int(target_hsv[1]), int(target_hsv[2]); h_tol, s_tol, v_tol = int(tolerance*1.8), int(tolerance*2.5), int(tolerance*2.5)
-        lower = np.array([max(0,h-h_tol), max(0,s-s_tol), max(0,v-v_tol)]); upper = np.array([min(179,h+h_tol), min(255,s+s_tol), min(255,v+v_tol)])
-        mask = cv2.inRange(hsv, lower, upper); contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest = max(contours, key=cv2.contourArea); area = cv2.contourArea(largest)
-            if area > min_area:
-                M = cv2.moments(largest)
-                if M['m00'] != 0: return (int(M['m10']/M['m00'])+offset[0], int(M['m01']/M['m00'])+offset[1]), area
-        return None, 0
+        # Delegated to the refactor target so the targeting modes live in one
+        # tested place instead of being duplicated here.
+        return flowchart_color.find_color_hsv(
+            img_bgr, offset, step.get('rgb', (255,0,0)), step.get('tolerance', 2),
+            step.get('min_pixel_area', 10), step.get('blob_target', 'Largest Blob'),
+            step.get('split_blob_width', 0))
 
     def find_color_on_screen_rgb(self, img_bgr, offset, step):
-        rgb = step.get('rgb', (255,0,0)); tolerance = step.get('tolerance', 2); min_area = step.get('min_pixel_area', 10)
-        lower = np.array([max(0, rgb[2]-tolerance), max(0, rgb[1]-tolerance), max(0, rgb[0]-tolerance)]) 
-        upper = np.array([min(255, rgb[2]+tolerance), min(255, rgb[1]+tolerance), min(255, rgb[0]+tolerance)])
-        mask = cv2.inRange(img_bgr, lower, upper)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest = max(contours, key=cv2.contourArea); area = cv2.contourArea(largest)
-            if area > min_area:
-                M = cv2.moments(largest)
-                if M['m00'] != 0: return (int(M['m10']/M['m00'])+offset[0], int(M['m01']/M['m00'])+offset[1]), area
-        return None, 0
+        return flowchart_color.find_color_rgb(
+            img_bgr, offset, step.get('rgb', (255,0,0)), step.get('tolerance', 2),
+            step.get('min_pixel_area', 10), step.get('blob_target', 'Largest Blob'),
+            step.get('split_blob_width', 0))
 
     def find_template_in_region(self, screen_processed, offset, template_data, threshold):
         """

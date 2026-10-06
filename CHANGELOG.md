@@ -59,6 +59,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/CODE_REVIEW.md`; `docs/` is now excluded from ruff.
 
 ### Added
+- **Colour aim point and blob splitting.** A colour step already picked the
+  largest matching region, but `cv2.findContours` merges any regions that touch,
+  and anti-aliasing joins blobs with a bridge one pixel wide, so "largest blob"
+  could silently mean *two blobs and the gap between them*: two 40x40 blocks
+  joined by a one-pixel line reported their midpoint, which is also numerically
+  the centre of mass. Two new per-step options:
+  `Aim Point` (`Largest Blob`, the existing default; `Center Of All Matches`,
+  which averages every matching pixel and so deliberately lands between separated
+  blobs; `Nearest Blob To Area Center`, which picks one blob when several match)
+  and `Split Blobs (px)`, a morphological opening that cuts bridges up to twice
+  the given width so touching blobs become separate contours again. `0` disables
+  splitting, which keeps existing projects behaving exactly as before.
+
+  Both live on `ColorStep` (`blob_target`, `split_blob_width`), are written to
+  saved projects, and default to the previous behaviour. Colour detection in the
+  legacy app now delegates to `detection.color` instead of keeping a second copy
+  of the mask and contour code.
 - **Global hotkeys on Linux without root.** F2/F3/F4 previously died wherever the
   `keyboard` library could not register them, which is everywhere on Linux because
   it refuses to run unless euid is 0. `wayland/hotkeys.py` reads `/dev/input/event*`

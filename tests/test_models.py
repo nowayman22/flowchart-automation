@@ -172,3 +172,24 @@ def test_logical_type_string_is_coerced_to_enum() -> None:
     step = step_from_dict({"kind": "logical", "name": "l", "logical_type": "Movement Detect"})
     assert isinstance(step, LogicalStep)
     assert step.logical_type is LogicalKind.MOVEMENT
+
+
+def test_color_step_aim_point_default_matches_detection_module() -> None:
+    """models.py duplicates these strings to stay free of cv2; keep them in step."""
+    from flowchart_automation.detection.color import DEFAULT_TARGET, TARGET_MODES
+
+    step = ColorStep()
+    assert step.blob_target == DEFAULT_TARGET
+    assert step.blob_target in TARGET_MODES
+
+
+def test_color_step_splitting_defaults_to_off() -> None:
+    """Off by default, so existing projects keep their exact behaviour."""
+    assert ColorStep().split_blob_width == 0
+
+
+def test_aim_point_survives_the_json_round_trip() -> None:
+    step = ColorStep(blob_target="Center Of All Matches", split_blob_width=3)
+    restored = step_from_dict(json.loads(json.dumps(step_to_dict(step))))
+    assert restored.blob_target == "Center Of All Matches"
+    assert restored.split_blob_width == 3

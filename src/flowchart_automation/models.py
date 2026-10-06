@@ -135,6 +135,14 @@ class ColorStep(BaseStep):
     area: Area | None = None
     count_expression: str = ">= 1"
     count_max_cycles: int = 1
+    # Where to aim when several blobs match. These strings are written to saved
+    # projects, so they are part of the on-disk format. They are duplicated here
+    # rather than imported from detection.color so that models.py stays free of
+    # cv2; tests/test_models.py asserts the two stay in step.
+    blob_target: str = "Largest Blob"
+    # Morphological opening width in pixels, 0 = off. Cuts the thin bridges that
+    # make cv2.findContours merge neighbouring blobs into a single contour.
+    split_blob_width: int = 0
 
 
 @dataclass

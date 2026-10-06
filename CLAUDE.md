@@ -50,7 +50,7 @@ The project is mid-refactor. Today there are two parallel layers:
 - `persistence.py` - `save(path, project)` / `load(path, strict=False) -> Project` with v1->v2 migration. Unreadable steps land in `Project.load_warnings` and emit a `UserWarning`; they are never dropped silently.
 - `util/paths.py` - `get_base_path()` (portable/PyInstaller aware)
 - `util/expressions.py` - `evaluate(expression_str, value)` (the `>= 5` evaluator used in three places)
-- `detection/color.py` - `find_color_hsv`, `find_color_rgb`, `count_color` (pure functions)
+- `detection/color.py` - `find_color_hsv`, `find_color_rgb`, `count_color`, plus the aiming helpers `find_blobs`, `select_target`, `separate_touching` (pure functions). `find_color_*` take `target` and `split_width`: `cv2.findContours` merges blobs that touch, so "largest blob" can silently mean two blobs and the gap between them. `separate_touching` opens the mask to cut the thin bridges that cause it. The legacy app delegates to these rather than keeping its own copy.
 - `detection/png.py` - `find_png`, `count_png`, `load_template`, `find_template_in_region`, `count_distinct_rects` (pure, cache-dict based). `count_distinct_rects` replaces `cv2.groupRectangles`, which OpenCV 5 removed.
 - `detection/movement.py` - `compare_frames(previous, current, tolerance) -> MovementResult`
 - `detection/ocr.py` - `extract_number`, `preprocess`, `AVAILABLE` flag; sets up Tesseract path on import
@@ -64,7 +64,7 @@ Pointer positioning must go through `compositor.move_cursor`, never `ydotool mou
 
 `pyautogui` is X11/Windows only and **cannot be imported at all on Wayland**: it calls `size()` at import time and raises `Xlib.error.XauthError`. `wayland.install_shim()` must therefore run before anything imports pyautogui, which is why `__main__.py` calls it first. On Wayland, capture goes through grim and input through ydotool, so input requires both the `ydotool` package and a running `ydotoold` daemon (`scripts/setup-wayland.sh`). Without them the editor and detection still work and input calls raise `InputError` with the fix in the message.
 
-Global hotkeys (F2/F3/F4) use the `keyboard` library, which needs root on Linux, so they are unavailable there. Detection and input code must never assume they exist.
+Global hotkeys are attempted in two steps. The `keyboard` library is tried first (it works on Windows), but on Linux it refuses to run unless euid is 0, so `wayland/hotkeys.py` takes over: it reads `/dev/input/event*` directly, which needs only membership of the `input` group. It is a passive listener, never a grab, so the focused application still receives the key. Devices named `ydotoold`/`virtual`/`uinput` must be ignored or the app would react to its own injected keys. F2/F3/Escape are also bound in-window as a fallback. Detection and input code must never assume a global hotkey exists.
 
 Note that `FlowchartClickerApp66.py` is excluded from ruff, so its own style is unchanged.
 
