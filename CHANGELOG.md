@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The F3 picker made the app vanish with no way back.** "Pick (F3)" and
+  "Get Loc (F3)" withdrew the main window and then waited for the global F3
+  hotkey, and only `capture_from_hotkey` (whose `finally` restores the window)
+  could carry out the capture. The `keyboard` library needs root on Linux, so
+  that hotkey is never registered and nothing ever fired: the window stayed
+  hidden permanently and the process had to be killed. The picker now owns a
+  small window that takes focus and binds F3 and Escape itself, with Capture and
+  Cancel buttons for mouse-only use and a live cursor readout.
+- **The picker window must not be override-redirect.** Hyprland never delivers
+  keyboard input to an override-redirect window, so F3 and Escape never arrived
+  even though Tk reported the window as focused (`focus_get()` returned
+  `.!toplevel`). Isolated by comparing a plain root, an override-redirect
+  toplevel and a normal toplevel: only the first and last received keys.
+- **A picker capture could sample the picker itself.** Clicking the Capture
+  button moves the cursor onto it, and a pixel read taken while the window was
+  on screen would return the window's own colour. The picker now remembers the
+  last cursor position seen outside itself, and tears the window down (giving the
+  compositor 150 ms to repaint) before sampling.
 - **The app could not start on Linux at all.** `import pyautogui` runs
   `size()` at import time, which needs an X connection and dies with
   `Xlib.error.XauthError` on Wayland, so the module never loaded. The entry

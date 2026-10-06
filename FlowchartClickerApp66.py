@@ -182,6 +182,10 @@ class FlowchartClickerApp:
         
         # --- Hotkey / Capture Mode State ---
         self.f3_mode = None
+        # Picker overlay state (see enter_f3_mode)
+        self.picker_overlay = None
+        self.picker_pos_label = None
+        self.picker_poll_id = None
 
         # --- Live Info & Logging ---
         self.last_detection_info = tk.StringVar(value="Detection: N/A")
@@ -355,6 +359,7 @@ class FlowchartClickerApp:
             self.update_widget_colors_recursive(child, theme)
 
     def on_closing(self):
+        self._destroy_picker_overlay()
         self.destroy_all_overlays()
         self._stop_ge_auto_updater()
         if self.running: self.stop()
@@ -3061,30 +3066,150 @@ class FlowchartClickerApp:
         index = self.selected_items[0]['index'] if (self.selected_items and len(self.selected_items) == 1 and self.selected_items[0]['type'] == 'step') else None
         context = 'test' if action in ['pick_test_color'] else 'step'
         if context == 'step' and index is None: return
+        if self.f3_mode is not None: self.cancel_f3_mode()
+
+        self.f3_mode = {'action': action, 'index': index, 'context': context, 'last_outside': None}
         if self.hide_on_select.get(): self.root.withdraw()
-        self.f3_mode = {'action': action, 'index': index, 'context': context}
-        
-        action_text_map = {'pick_color': "PICKING COLOR", 'pick_location': "GETTING LOCATION"}
-        action_text = action_text_map.get(action, "CAPTURING")
-        
-        self.status_label_color_state = 'orange'; self.status_label.config(text=f"{action_text}: Move mouse and press F3", foreground=self.current_theme['status_orange']); self.log(f"Entering picker mode. Press F3 to capture.", "orange")
+
+        # The global F3 hotkey needs root on Linux and cannot be registered, so
+        # the picker owns its own focused overlay. That overlay receives F3 (and
+        # Escape) directly, and shows buttons for a mouse-only capture, so the
+        # app can never end up hidden with no way back.
+        self._build_picker_overlay(action)
+        self.status_label_color_state = 'orange'
+        self.status_label.config(text=f"{self._picker_action_text(action)}: Move mouse and press F3", foreground=self.current_theme['status_orange'])
+        self.log("Picker mode: move the mouse to the target, then press F3. Escape cancels.", "orange")
+
+    def _picker_action_text(self, action):
+        return {'pick_color': "PICKING COLOR", 'pick_location': "GETTING LOCATION", 'pick_test_color': "PICKING TEST COLOR"}.get(action, "CAPTURING")
+
+    def _build_picker_overlay(self, action):
+        self._destroy_picker_overlay()
+        theme = self.current_theme
+        overlay = tk.Toplevel(self.root)
+        # Deliberately NOT overrideredirect(True): Hyprland will not deliver
+        # keyboard input to an override-redirect window, so F3 and Escape never
+        # arrive even though Tk reports the window as focused. A normal managed
+        # toplevel receives them.
+        overlay.title("Picker")
+        # Best effort only: Hyprland/XWayland accepts these and then ignores them
+        # (they read straight back as 0/1.0). They do take effect on Windows/X11.
+        # The window is still placed and stacked by the compositor, and being a
+        # managed toplevel is what matters for receiving F3.
+        overlay.attributes("-topmost", True, "-alpha", 0.95)
+        overlay.resizable(False, False)
+
+        frame = tk.Frame(overlay, bg=theme['bg'], highlightbackground=theme['status_orange'], highlightthickness=2)
+        frame.pack(fill=tk.BOTH, expand=True)
+        tk.Label(frame, text=self._picker_action_text(action), bg=theme['bg'], fg=theme['status_orange'], font=('Helvetica', 10, 'bold')).pack(padx=14, pady=(8, 0))
+        self.picker_pos_label = tk.Label(frame, text="reading cursor...", bg=theme['bg'], fg=theme['fg'], font=('Consolas', 11))
+        self.picker_pos_label.pack(padx=14)
+        tk.Label(frame, text="Move the mouse, then press F3.   Esc cancels.", bg=theme['bg'], fg=theme['node_text_grey'], font=('Helvetica', 9)).pack(padx=14)
+
+        buttons = tk.Frame(frame, bg=theme['bg']); buttons.pack(padx=14, pady=8)
+        tk.Button(buttons, text="Capture (F3)", font=('Helvetica', 9), relief=tk.FLAT, bg=theme['accent_green'], fg=theme['btn_fg'], command=self.capture_from_hotkey).pack(side=tk.LEFT, padx=4)
+        tk.Button(buttons, text="Cancel (Esc)", font=('Helvetica', 9), relief=tk.FLAT, bg=theme['accent_red'], fg=theme['btn_fg'], command=self.cancel_f3_mode).pack(side=tk.LEFT, padx=4)
+
+        overlay.update_idletasks()
+        width = overlay.winfo_reqwidth()
+        screen_w = self.root.winfo_screenwidth()
+        target = f"+{max(0, (screen_w - width) // 2)}+40"
+        overlay.geometry(target)
+        # Best effort: on compositors that honour it, re-asserting once the
+        # window is mapped actually moves it.
+        overlay.after(60, lambda: self._place_picker(target))
+
+        overlay.bind("<F3>", lambda e: self.capture_from_hotkey())
+        overlay.bind("<Escape>", lambda e: self.cancel_f3_mode())
+        self.picker_overlay = overlay
+        try: overlay.focus_force()
+        except tk.TclError: pass
+        self._picker_tick()
+
+    def _place_picker(self, target):
+        if self.picker_overlay is None: return
+        try: self.picker_overlay.geometry(target)
+        except tk.TclError: pass
+
+    def _picker_tick(self):
+        """Track the cursor so the displayed position stays live and so a click
+        on the overlay still captures the point the cursor came from."""
+        if self.picker_overlay is None or self.f3_mode is None: return
+        try:
+            x, y = pyautogui.position()
+            self.f3_mode['cursor'] = (x, y)
+            if not self._point_in_picker(x, y): self.f3_mode['last_outside'] = (x, y)
+            if self.picker_pos_label is not None: self.picker_pos_label.config(text=f"{x}, {y}")
+        except Exception:
+            pass
+        self.picker_poll_id = self.root.after(100, self._picker_tick)
+
+    def _point_in_picker(self, x, y):
+        overlay = self.picker_overlay
+        if overlay is None: return False
+        try:
+            ox, oy = overlay.winfo_rootx(), overlay.winfo_rooty()
+            return ox <= x <= ox + overlay.winfo_width() and oy <= y <= oy + overlay.winfo_height()
+        except tk.TclError:
+            return False
+
+    def _destroy_picker_overlay(self):
+        if getattr(self, 'picker_poll_id', None) is not None:
+            try: self.root.after_cancel(self.picker_poll_id)
+            except Exception: pass
+            self.picker_poll_id = None
+        if getattr(self, 'picker_overlay', None) is not None:
+            try: self.picker_overlay.destroy()
+            except tk.TclError: pass
+            self.picker_overlay = None
+        self.picker_pos_label = None
+
+    def _finish_picker(self):
+        self._destroy_picker_overlay()
+        if self.hide_on_select.get():
+            self.root.config(bg=self.current_theme['bg'])
+            self.root.deiconify()
+        self.f3_mode = None
+        self.status_label_color_state = 'blue'
+        self.status_label.config(text="Status: Stopped", foreground=self.current_theme.get('status_blue', 'blue'))
+
+    def cancel_f3_mode(self):
+        if self.f3_mode is None and getattr(self, 'picker_overlay', None) is None: return
+        self._finish_picker()
+        self.log("Capture cancelled.")
 
     def capture_from_hotkey(self):
         if self.f3_mode is None: return
+        mode = self.f3_mode
         try:
-            context, index, action = self.f3_mode['context'], self.f3_mode['index'], self.f3_mode['action']; x, y = pyautogui.position()
+            x, y = pyautogui.position()
+            # Clicking the overlay's button moves the cursor onto the overlay, so
+            # fall back to the last point seen outside it.
+            if self._point_in_picker(x, y) and mode.get('last_outside'):
+                x, y = mode['last_outside']
+        except Exception:
+            x, y = mode.get('last_outside') or (0, 0)
+
+        wants_pixel = mode['action'] in ('pick_color', 'pick_test_color')
+        self._destroy_picker_overlay()
+        try:
+            if wants_pixel:
+                # Let the compositor repaint where the overlay was, or the pick
+                # would sample the overlay's own pixels.
+                time.sleep(0.15)
+            context, index, action = mode['context'], mode['index'], mode['action']
             if context == 'step':
                 step = self.steps[index]
-                if action == 'pick_color': 
+                if action == 'pick_color':
                     step['rgb'] = pyautogui.pixel(x, y)
                     if step.get('pixel_detect_enabled'):
                         step['pixel_coords'] = (x, y)
                     self.log(f"Captured color {step['rgb']} for Step {index + 1}.")
-                elif action == 'pick_location': 
+                elif action == 'pick_location':
                     step['coords'] = (x, y); self.log(f"Captured location {(x,y)} for Step {index + 1}.")
                 self.populate_properties_panel()
             elif context == 'test':
-                if action == 'pick_test_color': 
+                if action == 'pick_test_color':
                     self.test_color_rgb = pyautogui.pixel(x, y)
                     hex_color = self.rgb_to_hex(self.test_color_rgb)
                     self.test_color_swatch.config(bg=hex_color)
@@ -3093,10 +3218,7 @@ class FlowchartClickerApp:
                     self.log(f"Captured color {self.test_color_rgb} for testing.")
         except Exception as e: messagebox.showerror("Error", f"Could not capture: {e}")
         finally:
-            if self.hide_on_select.get():
-                self.root.config(bg=self.current_theme['bg'])
-                self.root.deiconify()
-            self.f3_mode = None; self.status_label_color_state = 'blue'; self.status_label.config(text="Status: Stopped", foreground=self.current_theme.get('status_blue', 'blue'))
+            self._finish_picker()
 
     def select_area_for_step(self): 
         if self.selected_items and len(self.selected_items) == 1 and self.selected_items[0]['type'] == 'step': 
@@ -3456,8 +3578,19 @@ class FlowchartClickerApp:
         return (step.get('x', 50) + step.get('_width', 180*z)/z/2, step.get('y', 50) + step.get('_height', 60*z)/z/2)
 
     def setup_hotkeys(self):
-        try: keyboard.add_hotkey('f2',lambda: self.start() if not self.running else self.stop()); keyboard.add_hotkey('f3',self.capture_from_hotkey); keyboard.add_hotkey('f4',self.select_area_mode)
-        except Exception as e: self.log(f"Failed to register hotkeys: {e}", "red")
+        try:
+            keyboard.add_hotkey('f2',lambda: self.start() if not self.running else self.stop()); keyboard.add_hotkey('f3',self.capture_from_hotkey); keyboard.add_hotkey('f4',self.select_area_mode)
+            self.global_hotkeys = True
+        except Exception as e:
+            # The keyboard library needs root on Linux, so this is the normal
+            # outcome there rather than an error the user can act on.
+            self.global_hotkeys = False
+            self.log(f"Global hotkeys unavailable ({e}). Use the on-screen buttons; F2/F3 work while this window has focus.", "orange")
+        # In-window bindings work on every platform, and are what makes the
+        # picker usable on Wayland.
+        self.root.bind("<F2>", lambda e: self.stop() if self.running else self.start())
+        self.root.bind("<F3>", lambda e: self.capture_from_hotkey())
+        self.root.bind("<Escape>", lambda e: self.cancel_f3_mode())
         self.root.bind("<Control-c>", self.copy_selection)
         self.root.bind("<Control-v>", self.paste_selection)
         self.root.bind("<Delete>", self.delete_selected_from_key)
