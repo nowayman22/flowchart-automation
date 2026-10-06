@@ -15,44 +15,9 @@ than failing there.
 
 from __future__ import annotations
 
-import contextlib
-import os
-import sys
-import tkinter as tk
-from pathlib import Path
+from conftest import requires_display
 
-import pytest
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-pytestmark = pytest.mark.skipif(
-    not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")),
-    reason="needs a display server",
-)
-
-
-@pytest.fixture
-def app():
-    """A constructed FlowchartClickerApp, with the Wayland shim installed."""
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
-
-    from flowchart_automation.wayland import install_shim
-
-    install_shim(verbose=False)
-
-    FlowchartClickerApp66 = pytest.importorskip("FlowchartClickerApp66")
-
-    root = tk.Tk()
-    instance = FlowchartClickerApp66.FlowchartClickerApp(root)
-    root.update()
-    instance.add_step("color")
-    root.update()
-    try:
-        yield instance, root
-    finally:
-        with contextlib.suppress(tk.TclError):
-            root.destroy()
+pytestmark = requires_display
 
 
 def test_picker_overlay_is_not_override_redirect(app) -> None:

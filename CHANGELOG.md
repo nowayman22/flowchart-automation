@@ -59,6 +59,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/CODE_REVIEW.md`; `docs/` is now excluded from ruff.
 
 ### Added
+- **Settings Inject can now change mouse movement**, which it could not at all
+  before. The list gains `Mouse Move Speed (s)`, `Mouse Move Mode`,
+  `Pixels Per Second`, `Min Move Time (s)` and `Max Move Time (s)`, so a flow can
+  speed the mouse up while travelling and slow it down for a precise click. The
+  move mode is matched case-insensitively, so `dynamic` normalises to `Dynamic`,
+  and a bad value leaves the setting untouched and logs why.
+
+  The dropdown and the runtime used two separate hand-maintained dictionaries, so
+  a name could be offered in the UI and then rejected at run time with "Unknown
+  setting". Both now derive from one table that keys into `global_settings_map`,
+  which already carries each setting's model variable and its type, so adding an
+  entry there is all that is needed to make a setting injectable.
+
+  New Settings Inject steps default to `Mouse Move Speed (s)` instead of
+  `Location Offset (±px)`. Saved projects store their own setting name and are
+  unaffected.
 - **Colour aim point and blob splitting.** A colour step already picked the
   largest matching region, but `cv2.findContours` merges any regions that touch,
   and anti-aliasing joins blobs with a bridge one pixel wide, so "largest blob"

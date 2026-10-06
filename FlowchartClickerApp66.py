@@ -75,6 +75,25 @@ class FlowchartClickerApp:
     """
     MULTIPLE_VALUES = "< multiple values >"
 
+    # Settings a "Settings Inject" step may change mid-flow: display name -> key
+    # in global_settings_map. That map is the single source of truth for the
+    # model variable and its type, so this table only has to supply names.
+    INJECTABLE_SETTINGS = {
+        "Mouse Move Speed (s)": "mouse_speed",
+        "Mouse Move Mode": "mouse_move_mode",
+        "Pixels Per Second": "pixels_per_second",
+        "Min Move Time (s)": "min_move_time",
+        "Max Move Time (s)": "max_move_time",
+        "Location Offset (±px)": "loc_offset_variance",
+        "Speed Variance (±s)": "speed_variance",
+        "Base Hold Duration (s)": "hold_duration",
+        "Hold Variance (±s)": "hold_duration_variance",
+        "Scan Interval (s)": "scan_interval",
+    }
+
+    # Allowed values for the string-valued setting, matching the radio buttons.
+    MOVE_MODE_VALUES = ("Regular", "Dynamic", "Pixels Per Second")
+
     def __init__(self, root):
         self.root = root
         self.root.title("Flowchart Automation Tool")
@@ -1596,20 +1615,17 @@ class FlowchartClickerApp:
                     details_lf.columnconfigure(1, weight=1)
                     _toggle_inject_widgets()
                 elif selected_type == 'Settings Inject':
-                    setting_map = {
-                        "Location Offset (±px)": 'loc_offset_variance', "Speed Variance (±s)": 'speed_variance',
-                        "Hold Variance (±s)": 'hold_duration_variance', "Scan Interval (s)": 'scan_interval',
-                        "Base Hold Duration (s)": 'hold_duration'
-                    }
-                    setting_var = tk.StringVar(value=step.get('inject_setting_name', next(iter(setting_map))))
+                    setting_names = list(self.INJECTABLE_SETTINGS)
+                    setting_var = tk.StringVar(value=step.get('inject_setting_name', setting_names[0]))
                     self.properties_widgets['inject_setting_name'] = setting_var
                     
                     tk.Label(details_lf, text="Setting to Change:").grid(row=0, column=0, sticky='w', pady=5)
-                    ttk.OptionMenu(details_lf, setting_var, setting_var.get(), *setting_map.keys()).grid(row=0, column=1, sticky='ew', padx=5)
+                    ttk.OptionMenu(details_lf, setting_var, setting_var.get(), *setting_names).grid(row=0, column=1, sticky='ew', padx=5)
                     
                     tk.Label(details_lf, text="New Value:").grid(row=1, column=0, sticky='w', pady=5)
                     w = tk.Entry(details_lf, width=15); w.insert(0, str(step.get('inject_setting_value', ''))); w.grid(row=1, column=1, sticky='ew', padx=5)
                     self.properties_widgets['inject_setting_value'] = w
+                    tk.Label(details_lf, text="e.g. 0.15, or Dynamic for the move mode", font=('Helvetica', 8)).grid(row=2, column=1, sticky='w', padx=5)
                     details_lf.columnconfigure(1, weight=1)
                 elif selected_type == 'Number':
                     tk.Label(details_lf, text="Expression:").grid(row=0, column=0, sticky='w'); w=tk.Entry(details_lf, width=15); w.insert(0, str(step.get('expression', ''))); w.grid(row=0, column=1, columnspan=2, sticky='ew'); self.properties_widgets['expression'] = w; tk.Label(details_lf, text="e.g., > 100").grid(row=0, column=3, sticky='w', padx=5)
@@ -2132,6 +2148,24 @@ class FlowchartClickerApp:
         self.redraw_flowchart()
         self.populate_properties_panel()
 
+    def _convert_injected_value(self, setting_key, raw_value):
+        """Convert a Settings Inject value to the type its model variable wants.
+
+        The type comes from global_settings_map rather than being restated here,
+        so adding a setting there is all that is needed for it to be injectable.
+        """
+        kind = self.global_settings_map[setting_key]['type']
+        text = str(raw_value).strip()
+        if kind is str:
+            for option in self.MOVE_MODE_VALUES:
+                if text.lower() == option.lower(): return option
+            raise ValueError(f"must be one of: {', '.join(self.MOVE_MODE_VALUES)}")
+        if kind is bool:
+            if text.lower() in ('true', '1', 'yes', 'on'): return True
+            if text.lower() in ('false', '0', 'no', 'off'): return False
+            raise ValueError("must be true or false")
+        return kind(text)
+
     def apply_global_settings(self):
         try:
             # Settings controlled by Radiobuttons, Checkbuttons, or Scales are updated
@@ -2192,7 +2226,7 @@ class FlowchartClickerApp:
                 'text_to_type': '', 'press_enter': False, 'enter_press_delay': 0.1, 'text_source': 'Static Text', 'ge_data_field': 'Calculated Buy Price',
                 'ge_inject_name': '', 'ge_inject_field': 'Name', 'ge_inject_quantity': '1',
                 'ge_inject_refresh': False,
-                'inject_setting_name': 'Location Offset (±px)', 'inject_setting_value': '4',
+                'inject_setting_name': next(iter(self.INJECTABLE_SETTINGS)), 'inject_setting_value': '0.15',
                 'on_count_reached_action': 'Stop', 'on_count_reached_goto_step': 1, 'on_count_reached_delay': 1.0,
                 'expression': '> 0', 'area': None, 'timeout': 5, 'on_timeout_action': 'Next Step', 
                 'image_mode': 'Grayscale', 'psm_mode': '6: Assume a single uniform block of text.', 'oem_mode': '3: Default, based on what is available.',
@@ -2914,20 +2948,12 @@ class FlowchartClickerApp:
         elif logical_type == 'Settings Inject':
             setting_name = step.get('inject_setting_name')
             new_value_str = step.get('inject_setting_value')
-            
-            setting_map = {
-                "Location Offset (±px)": {'model': self.loc_offset_variance, 'type': int},
-                "Speed Variance (±s)": {'model': self.speed_variance, 'type': float},
-                "Hold Variance (±s)": {'model': self.hold_duration_variance, 'type': float},
-                "Scan Interval (s)": {'model': self.scan_interval, 'type': float},
-                "Base Hold Duration (s)": {'model': self.hold_duration, 'type': float}
-            }
 
-            if setting_name in setting_map:
+            setting_key = self.INJECTABLE_SETTINGS.get(setting_name)
+            if setting_key is not None:
                 try:
-                    setting_info = setting_map[setting_name]
-                    converted_value = setting_info['type'](new_value_str)
-                    setting_info['model'].set(converted_value)
+                    converted_value = self._convert_injected_value(setting_key, new_value_str)
+                    self.global_settings_map[setting_key]['model'].set(converted_value)
                     self._sync_global_settings_ui_from_model() # Update UI
                     
                     self.last_detection_info.set(f"Inject: Set {setting_name} to {converted_value}")
