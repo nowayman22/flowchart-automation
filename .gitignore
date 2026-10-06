@@ -67,6 +67,9 @@ tesseract/
 # repo root and are user data, not source. Fixtures under tests/ are still
 # tracked, because the rule only matches the top level.
 /*.json
+# Snippets written by Snip default to the repo root as snippet_step_N.png.
+# Only the top level is matched, so packaging/ and tests/ images stay tracked.
+/*.png
 *.session.json
 *.bak
 logs/

@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Snip captured the grey selection overlay instead of the screen.** It drew a
+  full-screen grey overlay, destroyed it, paused 100 ms and then took a
+  screenshot. Tk only *queues* a destroy, and the event loop is blocked by that
+  sleep, so the request had not reached the X server: the capture came back
+  byte-identical to the frame with the overlay still up (brightness 26.1 before
+  and after, and `grey10` is exactly 26). Every snip was a picture of the grey
+  sheet.
+- **The overlay was opaque, not the intended 30% dim.** `wm attributes -alpha`
+  and `-topmost` are accepted by Tk and then ignored under Hyprland/XWayland, so
+  the screen went solid grey and hid the very thing being selected. The same
+  applied to the F4 area picker, which had to be dragged blind.
+
+  Both now use a **freeze frame**: the screen is captured once *before* any
+  window exists, that image is shown fullscreen, and the selection is cropped
+  out of the same frame. There is no second capture, so there is no race to lose,
+  and the real screen is visible while selecting. Verified by cropping a region
+  and comparing it against an independent capture of the same area: mean
+  difference 0.3, where the old path differed by nothing from the overlay frame.
+- Right-click now cancels a selection as well as Escape. The selection window is
+  override-redirect, which Hyprland never gives keyboard focus, so Escape alone
+  could leave the user stuck on a full-screen window with no way out.
+- Re-snipping to a filename that already has a cached template now clears that
+  cache entry, so the old template is not silently reused.
 - **The F3 picker made the app vanish with no way back.** "Pick (F3)" and
   "Get Loc (F3)" withdrew the main window and then waited for the global F3
   hotkey, and only `capture_from_hotkey` (whose `finally` restores the window)

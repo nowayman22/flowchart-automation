@@ -74,6 +74,8 @@ Per-frame work runs on the Tk main thread in `run_step_executor`, so a slow capt
 
 Global hotkeys are attempted in two steps. The `keyboard` library is tried first (it works on Windows), but on Linux it refuses to run unless euid is 0, so `wayland/hotkeys.py` takes over: it reads `/dev/input/event*` directly, which needs only membership of the `input` group. It is a passive listener, never a grab, so the focused application still receives the key. Devices named `ydotoold`/`virtual`/`uinput` must be ignored or the app would react to its own injected keys. F2/F3/Escape are also bound in-window as a fallback. Detection and input code must never assume a global hotkey exists.
 
+`wm attributes` (`-topmost`, `-alpha`) are accepted by Tk and then **ignored** under Hyprland/XWayland: they read straight back as `0`/`1.0` and have no effect. Anything needing a dimmed, translucent or always-on-top window must not rely on them. Full-screen selection UI therefore uses `begin_screen_selection`, which captures the screen **before** showing anything and crops the selection out of that frozen frame. Never take a second screenshot after tearing down a selection overlay: Tk only queues a destroy, and a sleep in the callback blocks the event loop, so the request may not have reached the X server and the overlay ends up in the capture. Override-redirect windows also never receive keyboard focus, so any full-screen picker needs a mouse-only way out (right-click).
+
 Note that `FlowchartClickerApp66.py` is excluded from ruff, so its own style is unchanged.
 
 ### Data model (`models.py`)

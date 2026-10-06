@@ -3359,66 +3359,139 @@ class FlowchartClickerApp:
             self._update_png_preview(step)
             self.log(f"Set path for Step {index + 1} to '{os.path.basename(path)}'.")
 
-    def snip_image_for_step(self, event=None):
-        if self.running or not (self.selected_items and len(self.selected_items) == 1 and self.selected_items[0]['type'] == 'step'): return
-        index = self.selected_items[0]['index']
+    def _restore_after_selection(self, window_state, current_geometry):
+        """Put the main window back exactly as it was before a full-screen picker."""
+        if self.hide_on_select.get():
+            self.root.config(bg=self.current_theme['bg'])
+            self.root.deiconify()
+            self.root.state('zoomed') if window_state == 'zoomed' else self.root.geometry(current_geometry)
+        self.root.focus_force()
+
+    def begin_screen_selection(self, on_selected, outline="#3399ff",
+                               hint="Drag to select   |   Right-click or Esc to cancel"):
+        """Capture the screen, show it frozen, and let the user drag a region.
+
+        The screen is captured *before* any selection window exists, and the
+        region is cropped out of that same image, so the selection UI can never
+        end up in the result and no timing race with the compositor is possible.
+
+        The previous approach drew a full-screen grey overlay, destroyed it, then
+        took a second screenshot once it "should" have gone. Under Hyprland the
+        destroy had not even reached the X server by then, so every snip came
+        back as the grey overlay itself. It was opaque rather than the intended
+        30% dim as well, because wm attributes are ignored here, which hid the
+        very thing the user was trying to select.
+
+        on_selected(frozen_image, (x1, y1, x2, y2)) is called with the region in
+        logical screen coordinates; the image is the full frozen frame so callers
+        can crop it. The image is also shown live, so what you see is what gets
+        captured, at full brightness.
+        """
+        if self.running: return
         window_state, current_geometry = self.root.state(), self.root.geometry()
-        
+
         if self.hide_on_select.get():
             self.root.withdraw()
             self.root.update_idletasks()
-            time.sleep(0.5) # Wait for OS to redraw behind the withdrawn window
-            
-        overlay = tk.Toplevel(self.root); overlay.attributes("-alpha", 0.3, "-topmost", True); overlay.overrideredirect(True); w, h = self.root.winfo_screenwidth(), self.root.winfo_screenheight(); overlay.geometry(f"{w}x{h}+0+0"); canvas = tk.Canvas(overlay, cursor="cross", bg="grey10"); canvas.pack(fill=tk.BOTH, expand=True); rect_id, start_x, start_y = None, 0, 0
-        
-        def on_press(e): nonlocal start_x, start_y, rect_id; start_x, start_y = e.x_root, e.y_root; rect_id = canvas.create_rectangle(e.x, e.y, e.x, e.y, outline="#3399ff", width=2, dash=(4,2))
-        def on_drag(e):
-            if rect_id: canvas.coords(rect_id, start_x, start_y, e.x_root, e.y_root)
-        
-        def on_release(e):
-            x1, y1, x2, y2 = min(start_x, e.x_root), min(start_y, e.y_root), max(start_x, e.x_root), max(start_y, e.y_root)
+            time.sleep(0.3) # let the compositor repaint without our window
+
+        try:
+            frozen = pyautogui.screenshot()
+        except Exception as ex:
+            self._restore_after_selection(window_state, current_geometry)
+            self.log(f"Error capturing the screen: {ex}", "red")
+            messagebox.showerror("Capture Error", f"Could not capture the screen: {ex}")
+            return
+
+        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        # grim returns physical pixels; Tk drags are in logical ones. On a
+        # scale-1 monitor these match, on HiDPI they do not.
+        scale_x = frozen.width / screen_w if screen_w else 1.0
+        scale_y = frozen.height / screen_h if screen_h else 1.0
+
+        overlay = tk.Toplevel(self.root)
+        overlay.overrideredirect(True)
+        overlay.geometry(f"{screen_w}x{screen_h}+0+0")
+        canvas = tk.Canvas(overlay, cursor="cross", highlightthickness=0, bd=0, bg="black")
+        canvas.pack(fill=tk.BOTH, expand=True)
+        frozen_tk = ImageTk.PhotoImage(frozen)
+        canvas.create_image(0, 0, anchor='nw', image=frozen_tk)
+        canvas.image = frozen_tk # keep a reference or Tk garbage-collects it
+        canvas.create_text(screen_w // 2, 22, text=hint, fill="#ffffff", font=('Helvetica', 11))
+
+        drag = {'x': 0, 'y': 0, 'rect_id': None, 'box': None, 'finished': False}
+
+        def finish(cancelled):
+            if drag['finished']: return
+            drag['finished'] = True
             overlay.destroy()
-
-            # Abort if area is too small, but make sure to restore window first
-            if (x2 - x1) < 10 or (y2 - y1) < 10:
-                if self.hide_on_select.get():
-                    self.root.deiconify()
-                    self.root.state('zoomed') if window_state == 'zoomed' else self.root.geometry(current_geometry)
-                self.root.focus_force()
-                self.log("Snipping cancelled: area was too small.", "orange")
+            self._restore_after_selection(window_state, current_geometry)
+            if cancelled or drag['box'] is None:
+                self.log("Selection cancelled.", "orange")
                 return
+            x1, y1, x2, y2 = drag['box']
+            if (x2 - x1) < 10 or (y2 - y1) < 10:
+                self.log("Selection cancelled: area was too small.", "orange")
+                return
+            on_selected(frozen, (x1, y1, x2, y2))
 
-            # Capture the screen region while the main window is still hidden
-            captured_image = None
-            try:
-                time.sleep(0.1) # Brief pause for overlay to vanish
-                captured_image = pyautogui.screenshot(region=(x1, y1, x2 - x1, y2 - y1))
-            except Exception as ex:
-                self.log(f"Error capturing screen snippet: {ex}", "red")
-            
-            # Now that the capture is done, restore the main window
-            if self.hide_on_select.get():
-                self.root.deiconify()
-                self.root.state('zoomed') if window_state == 'zoomed' else self.root.geometry(current_geometry)
-            self.root.focus_force()
+        def on_press(e):
+            drag['x'], drag['y'] = e.x_root, e.y_root
+            if drag['rect_id']: canvas.delete(drag['rect_id'])
+            drag['rect_id'] = canvas.create_rectangle(e.x, e.y, e.x, e.y, outline=outline, width=2, dash=(4, 2))
 
-            # If capture was successful, ask the user where to save it
-            if captured_image:
-                filepath = filedialog.asksaveasfilename(title="Save Snippet As", defaultextension=".png", filetypes=[("PNG Files", "*.png")], initialfile=f"snippet_step_{index+1}.png")
-                if filepath:
-                    try:
-                        captured_image.save(filepath)
-                        self.steps[index]['path'] = filepath
-                        self.populate_properties_panel()
-                        self._update_png_preview(self.steps[index])
-                        self.log(f"Saved snippet and set path for Step {index+1}.")
-                    except Exception as ex:
-                        messagebox.showerror("Save Error", f"Failed to save snippet: {ex}")
-                        self.log(f"Error saving snippet: {ex}", "red")
+        def on_drag(e):
+            if drag['rect_id']: canvas.coords(drag['rect_id'], drag['x'], drag['y'], e.x_root, e.y_root)
+
+        def on_release(e):
+            drag['box'] = (min(drag['x'], e.x_root), min(drag['y'], e.y_root),
+                           max(drag['x'], e.x_root), max(drag['y'], e.y_root))
+            finish(cancelled=False)
 
         canvas.bind("<ButtonPress-1>", on_press)
         canvas.bind("<B1-Motion>", on_drag)
         canvas.bind("<ButtonRelease-1>", on_release)
+        # The overlay is override-redirect, which Hyprland never gives keyboard
+        # focus, so Escape alone would leave the user stuck on a full-screen
+        # window. Right-click is the way out that always works.
+        canvas.bind("<Button-3>", lambda e: finish(cancelled=True))
+        overlay.bind("<Escape>", lambda e: finish(cancelled=True))
+        try: overlay.focus_force()
+        except tk.TclError: pass
+
+    def _crop_frozen(self, frozen, box):
+        """Crop a logical-coordinate box out of a frozen frame, scaling for HiDPI."""
+        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        scale_x = frozen.width / screen_w if screen_w else 1.0
+        scale_y = frozen.height / screen_h if screen_h else 1.0
+        x1, y1, x2, y2 = box
+        return frozen.crop((int(x1 * scale_x), int(y1 * scale_y), int(x2 * scale_x), int(y2 * scale_y)))
+
+    def _forget_template_cache(self, path):
+        """Drop cached templates for a path whose file we just overwrote."""
+        for key in [k for k in list(self.template_cache) if k.startswith(f"{path}|")]:
+            del self.template_cache[key]
+
+    def snip_image_for_step(self, event=None):
+        if self.running or not (self.selected_items and len(self.selected_items) == 1 and self.selected_items[0]['type'] == 'step'): return
+        index = self.selected_items[0]['index']
+
+        def save_snippet(frozen, box):
+            captured_image = self._crop_frozen(frozen, box)
+            filepath = filedialog.asksaveasfilename(title="Save Snippet As", defaultextension=".png", filetypes=[("PNG Files", "*.png")], initialfile=f"snippet_step_{index+1}.png")
+            if not filepath: return
+            try:
+                captured_image.save(filepath)
+                self._forget_template_cache(filepath) # a re-snip to the same name must not serve a stale template
+                self.steps[index]['path'] = filepath
+                self.populate_properties_panel()
+                self._update_png_preview(self.steps[index])
+                self.log(f"Saved snippet ({captured_image.width}x{captured_image.height}) and set path for Step {index+1}.")
+            except Exception as ex:
+                messagebox.showerror("Save Error", f"Failed to save snippet: {ex}")
+                self.log(f"Error saving snippet: {ex}", "red")
+
+        self.begin_screen_selection(save_snippet)
 
     def browse_for_test_path(self):
         mode = self.test_png_mode.get(); path = filedialog.askopenfilename(filetypes=[("PNG Files", "*.png")]) if mode == 'file' else filedialog.askdirectory()
@@ -3426,62 +3499,22 @@ class FlowchartClickerApp:
 
     def snip_image_for_test(self):
         if self.running: return
-        window_state, current_geometry = self.root.state(), self.root.geometry()
 
-        if self.hide_on_select.get():
-            self.root.withdraw()
-            self.root.update_idletasks()
-            time.sleep(0.5) # Wait for OS to redraw behind the withdrawn window
-
-        overlay = tk.Toplevel(self.root); overlay.attributes("-alpha", 0.3, "-topmost", True); overlay.overrideredirect(True); w, h = self.root.winfo_screenwidth(), self.root.winfo_screenheight(); overlay.geometry(f"{w}x{h}+0+0"); canvas = tk.Canvas(overlay, cursor="cross", bg="grey10"); canvas.pack(fill=tk.BOTH, expand=True); rect_id, start_x, start_y = None, 0, 0
-        
-        def on_press(e): nonlocal start_x, start_y, rect_id; start_x, start_y = e.x_root, e.y_root; rect_id = canvas.create_rectangle(e.x, e.y, e.x, e.y, outline="#3399ff", width=2, dash=(4,2))
-        def on_drag(e):
-            if rect_id: canvas.coords(rect_id, start_x, start_y, e.x_root, e.y_root)
-
-        def on_release(e):
-            x1, y1, x2, y2 = min(start_x, e.x_root), min(start_y, e.y_root), max(start_x, e.x_root), max(start_y, e.y_root)
-            overlay.destroy()
-
-            # Abort if area is too small, but make sure to restore window first
-            if (x2 - x1) < 10 or (y2 - y1) < 10:
-                if self.hide_on_select.get():
-                    self.root.deiconify()
-                    self.root.state('zoomed') if window_state == 'zoomed' else self.root.geometry(current_geometry)
-                self.root.focus_force()
-                self.log("Snipping cancelled: area was too small.", "orange")
-                return
-
-            # Capture the screen region while the main window is still hidden
-            captured_image = None
+        def save_snippet(frozen, box):
+            captured_image = self._crop_frozen(frozen, box)
+            filepath = filedialog.asksaveasfilename(title="Save Test Snippet As", defaultextension=".png", filetypes=[("PNG Files", "*.png")], initialfile="test_snippet.png")
+            if not filepath: return
             try:
-                time.sleep(0.1) # Brief pause for overlay to vanish
-                captured_image = pyautogui.screenshot(region=(x1, y1, x2 - x1, y2 - y1))
+                captured_image.save(filepath)
+                self._forget_template_cache(filepath)
+                self.test_png_path.set(filepath)
+                self.test_png_path_display.set(os.path.basename(filepath))
+                self.log(f"Saved snippet ({captured_image.width}x{captured_image.height}) and set path for PNG test.")
             except Exception as ex:
-                self.log(f"Error capturing screen snippet: {ex}", "red")
+                messagebox.showerror("Save Error", f"Failed to save snippet: {ex}")
+                self.log(f"Error saving snippet: {ex}", "red")
 
-            # Now that the capture is done, restore the main window
-            if self.hide_on_select.get():
-                self.root.deiconify()
-                self.root.state('zoomed') if window_state == 'zoomed' else self.root.geometry(current_geometry)
-            self.root.focus_force()
-            
-            # If capture was successful, ask the user where to save it
-            if captured_image:
-                filepath = filedialog.asksaveasfilename(title="Save Test Snippet As", defaultextension=".png", filetypes=[("PNG Files", "*.png")], initialfile="test_snippet.png")
-                if filepath:
-                    try:
-                        captured_image.save(filepath)
-                        self.test_png_path.set(filepath)
-                        self.test_png_path_display.set(os.path.basename(filepath))
-                        self.log(f"Saved snippet and set path for PNG test.")
-                    except Exception as ex:
-                        messagebox.showerror("Save Error", f"Failed to save snippet: {ex}")
-                        self.log(f"Error saving snippet: {ex}", "red")
-        
-        canvas.bind("<ButtonPress-1>", on_press)
-        canvas.bind("<B1-Motion>", on_drag)
-        canvas.bind("<ButtonRelease-1>", on_release)
+        self.begin_screen_selection(save_snippet)
 
     def export_to_json(self):
         filepath = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Files", "*.json")], title="Export Flowchart")
@@ -3732,38 +3765,29 @@ class FlowchartClickerApp:
         self.canvas.bind("<MouseWheel>", _on_mouse_wheel); self.canvas.bind("<Button-4>", _on_mouse_wheel); self.canvas.bind("<Button-5>", _on_mouse_wheel)
 
     def select_area_mode(self, step_index=None, is_test=False):
-        if self.running: return
-        window_state, current_geometry = self.root.state(), self.root.geometry()
-        if self.hide_on_select.get():
-            self.root.withdraw()
-            self.root.update_idletasks()
-            time.sleep(0.3)
-        overlay = tk.Toplevel(self.root); overlay.attributes("-alpha", 0.25, "-topmost", True); overlay.overrideredirect(True); w, h = self.root.winfo_screenwidth(), self.root.winfo_screenheight(); overlay.geometry(f"{w}x{h}+0+0"); canvas = tk.Canvas(overlay, cursor="cross", bg="grey10"); canvas.pack(fill=tk.BOTH, expand=True); rect_id, start_x, start_y = None, 0, 0
-        def on_press(e): nonlocal start_x, start_y, rect_id; start_x, start_y = e.x_root, e.y_root; rect_id = canvas.create_rectangle(e.x, e.y, e.x, e.y, outline="red", width=2)
-        def on_drag(e):
-            if rect_id: canvas.coords(rect_id, start_x, start_y, e.x_root, e.y_root)
-        def on_release(e):
-            x1, y1, x2, y2 = min(start_x, e.x_root), min(start_y, e.y_root), max(start_x, e.x_root), max(start_y, e.y_root); overlay.destroy()
-            if self.hide_on_select.get():
-                self.root.config(bg=self.current_theme['bg'])
-                self.root.deiconify()
-                self.root.state('zoomed') if window_state == 'zoomed' else self.root.geometry(current_geometry)
-            if (x2-x1)>10 and (y2-y1)>10:
-                area = (x1, y1, x2, y2)
-                if is_test: 
-                    self.test_area = area
-                    area_text = f"Area: {x2-x1}x{y2-y1}"
-                    for btn in self.test_area_buttons:
-                        if btn.winfo_exists():
-                            btn.config(text=area_text)
-                    self.log("Set area for testing.")
-                elif step_index is not None: 
-                    self.steps[step_index]['area'] = area; self.populate_properties_panel(); self.log(f"Set area for Step {step_index+1}.")
-                    self.update_all_area_overlays()
-                else: 
-                    self.global_settings_ui_vars['area_x1'].set(x1); self.global_settings_ui_vars['area_y1'].set(y1); self.global_settings_ui_vars['area_x2'].set(x2); self.global_settings_ui_vars['area_y2'].set(y2)
-                    self.apply_global_settings(); self.log("Set global area.")
-        canvas.bind("<ButtonPress-1>", on_press); canvas.bind("<B1-Motion>", on_drag); canvas.bind("<ButtonRelease-1>", on_release)
+        """Pick a scan area by dragging on a frozen frame of the screen.
+
+        Uses the same freeze-frame as snip rather than a grey overlay: under
+        Hyprland the wm alpha is ignored, so the old overlay was an opaque sheet
+        and the area had to be chosen blind.
+        """
+        def apply_area(_frozen, area):
+            x1, y1, x2, y2 = area
+            if is_test:
+                self.test_area = area
+                area_text = f"Area: {x2-x1}x{y2-y1}"
+                for btn in self.test_area_buttons:
+                    if btn.winfo_exists():
+                        btn.config(text=area_text)
+                self.log("Set area for testing.")
+            elif step_index is not None:
+                self.steps[step_index]['area'] = area; self.populate_properties_panel(); self.log(f"Set area for Step {step_index+1}.")
+                self.update_all_area_overlays()
+            else:
+                self.global_settings_ui_vars['area_x1'].set(x1); self.global_settings_ui_vars['area_y1'].set(y1); self.global_settings_ui_vars['area_x2'].set(x2); self.global_settings_ui_vars['area_y2'].set(y2)
+                self.apply_global_settings(); self.log("Set global area.")
+
+        self.begin_screen_selection(apply_area, outline="#ff4444")
 
     def update_delay_countdown(self, end_time, next_action_func):
         remaining = end_time - time.time()
