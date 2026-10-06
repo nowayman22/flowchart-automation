@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **PNG Count crashed on OpenCV 5.** The app's own `find_and_count_png` still
+  called `cv2.groupRectangles`, which OpenCV 5 removed, so every count step
+  raised `AttributeError`. It now uses the detection module's
+  `count_distinct_rects`, the same replacement the refactor target already used.
+  This is the copy that was missed when the first fix landed; found while
+  testing the multi-snip work.
 - **Snip captured the grey selection overlay instead of the screen.** It drew a
   full-screen grey overlay, destroyed it, paused 100 ms and then took a
   screenshot. Tk only *queues* a destroy, and the event loop is blocked by that
@@ -82,6 +88,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/CODE_REVIEW.md`; `docs/` is now excluded from ruff.
 
 ### Added
+- **A PNG step can hold several snips.** File mode now keeps a list: press Snip
+  repeatedly to capture three or four different things and the step matches
+  whichever appears, so one step detects any of them instead of needing a step
+  per template. Add Files appends existing PNGs, Remove drops the selected
+  entries and Clear empties the list; entries whose file has gone missing are
+  marked in the list rather than silently failing. Folder mode is unchanged.
+
+  The preview follows the list selection and captions each entry, for example
+  `2 of 3: tree.png (36x60)`, so with several snips you can see which one you are
+  looking at. The log now names the template that matched
+  (`PNG 'tree.png' FOUND at ...`). `path` mirrors the first entry, so previews,
+  canvas labels and projects saved before the list existed keep working.
 - **Per-step click delay.** A "Click Delay (s)" field on colour and click steps
   waits after the pointer arrives and before the button goes down, for targets
   that need a moment before they accept a click. `0` (the default) clicks

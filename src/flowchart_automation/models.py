@@ -153,6 +153,11 @@ class PngStep(BaseStep):
     kind: Literal[StepKind.PNG] = StepKind.PNG
     action: str = "Click Object"
     mode: Literal["file", "folder"] = "file"
+    # In file mode the step matches any of these; one step can hold several
+    # snips so it detects whichever of them appears. `path` mirrors the first
+    # entry so previews, canvas labels and older code keep working, and it is
+    # the whole story for a step saved before the list existed.
+    paths: list[str] = field(default_factory=list)
     path: str = ""
     threshold: float = 0.8
     image_mode: ImageMode = "Grayscale"

@@ -51,7 +51,8 @@ The project is mid-refactor. Today there are two parallel layers:
 - `util/paths.py` - `get_base_path()` (portable/PyInstaller aware)
 - `util/expressions.py` - `evaluate(expression_str, value)` (the `>= 5` evaluator used in three places)
 - `detection/color.py` - `find_color_hsv`, `find_color_rgb`, `count_color`, plus the aiming helpers `find_blobs`, `select_target`, `separate_touching` (pure functions). `find_color_*` take `target` and `split_width`: `cv2.findContours` merges blobs that touch, so "largest blob" can silently mean two blobs and the gap between them. `separate_touching` opens the mask to cut the thin bridges that cause it. The legacy app delegates to these rather than keeping its own copy.
-- `detection/png.py` - `find_png`, `count_png`, `load_template`, `find_template_in_region`, `count_distinct_rects` (pure, cache-dict based). `count_distinct_rects` replaces `cv2.groupRectangles`, which OpenCV 5 removed.
+- `detection/png.py` - `find_png`, `count_png`, `load_template`, `find_template_in_region`, `count_distinct_rects` (pure, cache-dict based). `count_distinct_rects` replaces `cv2.groupRectangles`, which OpenCV 5 removed; the legacy app's own `find_and_count_png` must call it too, because it crashed on every PNG Count until it did.
+- A PNG step holds a **list** of templates (`paths`), so one step detects any of several snips. `step_template_paths` resolves the list, a legacy single `path`, or nothing; `collect_step_templates` loads them as `(label, data)` and both `find_png` and `find_and_count_png` go through it. `path` mirrors the first entry for previews, canvas labels and old saves.
 - `detection/movement.py` - `compare_frames(previous, current, tolerance) -> MovementResult`
 - `detection/ocr.py` - `extract_number`, `preprocess`, `AVAILABLE` flag; sets up Tesseract path on import
 - `execution/actions.py` - `execute_move`, `execute_click`, `execute_action` taking `GlobalSettings`

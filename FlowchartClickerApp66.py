@@ -18,6 +18,7 @@ except Exception as _shim_error:  # not installed, or not a Wayland session
 
 # Shared colour targeting (aim point, blob splitting) used by the executor.
 from flowchart_automation.detection import color as flowchart_color
+from flowchart_automation.detection import png as flowchart_png
 
 import pyautogui
 import time
@@ -1797,16 +1798,50 @@ class FlowchartClickerApp:
             w = tk.StringVar(value=step.get('mode')); self.properties_widgets['png_mode'] = w
             tk.Radiobutton(png_mode_frm,text="File",variable=w,value='file').pack(side=tk.LEFT)
             tk.Radiobutton(png_mode_frm,text="Folder",variable=w,value='folder').pack(side=tk.LEFT, padx=10)
-            
-            path_frm = tk.Frame(details_lf); path_frm.grid(row=1, columnspan=4, sticky='ew', pady=5)
-            tk.Button(path_frm,text="Snip",command=self.snip_image_for_step, font=('Helvetica', 9), relief=tk.FLAT).pack(side=tk.LEFT, padx=(0,5))
-            tk.Button(path_frm,text="Browse",command=self.browse_for_step, font=('Helvetica', 9), relief=tk.FLAT).pack(side=tk.LEFT)
-            w = tk.Label(path_frm,text=os.path.basename(step.get('path'))or"No path set",anchor='w',wraplength=180,justify='left'); w.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+            tk.Label(png_mode_frm, text="(File mode matches every snip you add)", font=('Helvetica', 8)).pack(side=tk.LEFT)
+
+            # --- file mode: a list of snips, any of which may match ---
+            files_frm = tk.Frame(details_lf)
+            files_frm.grid(row=1, column=0, columnspan=4, sticky='ew', pady=5)
+            buttons = tk.Frame(files_frm); buttons.pack(fill=tk.X)
+            tk.Button(buttons,text="Snip",command=self.snip_image_for_step, font=('Helvetica', 9), relief=tk.FLAT).pack(side=tk.LEFT, padx=(0,5))
+            tk.Button(buttons,text="Add Files",command=self.add_step_templates, font=('Helvetica', 9), relief=tk.FLAT).pack(side=tk.LEFT, padx=(0,5))
+            tk.Button(buttons,text="Remove",command=self.remove_step_template, font=('Helvetica', 9), relief=tk.FLAT).pack(side=tk.LEFT, padx=(0,5))
+            tk.Button(buttons,text="Clear",command=self.clear_step_templates, font=('Helvetica', 9), relief=tk.FLAT).pack(side=tk.LEFT)
+
+            list_frm = tk.Frame(files_frm); list_frm.pack(fill=tk.X, pady=(4,0))
+            self.properties_widgets['paths_listbox'] = tk.Listbox(list_frm, height=4, selectmode=tk.EXTENDED, font=('Helvetica', 9), activestyle='none')
+            self.properties_widgets['paths_listbox'].pack(side=tk.LEFT, fill=tk.X, expand=True)
+            scroll = ttk.Scrollbar(list_frm, orient=tk.VERTICAL, command=self.properties_widgets['paths_listbox'].yview)
+            scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            self.properties_widgets['paths_listbox'].config(yscrollcommand=scroll.set)
+            self._refresh_template_listbox(step)
+
+            # --- folder mode: a directory of templates ---
+            folder_frm = tk.Frame(details_lf)
+            folder_frm.grid(row=1, column=0, columnspan=4, sticky='ew', pady=5)
+            tk.Button(folder_frm,text="Browse Folder",command=self.browse_for_step, font=('Helvetica', 9), relief=tk.FLAT).pack(side=tk.LEFT, padx=(0,5))
+            w = tk.Label(folder_frm,text=os.path.basename(step.get('path'))or"No folder set",anchor='w',wraplength=180,justify='left'); w.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
             self.properties_widgets['path'] = w
-            
+
+            def _update_png_mode_ui(*_args):
+                if w_png_mode.get() == 'folder':
+                    files_frm.grid_remove(); folder_frm.grid()
+                else:
+                    folder_frm.grid_remove(); files_frm.grid()
+            w_png_mode = self.properties_widgets['png_mode']
+            w_png_mode.trace_add('write', _update_png_mode_ui)
+            _update_png_mode_ui()
+
             w_preview = tk.Label(details_lf, text="No Preview Available")
             w_preview.grid(row=2, column=0, columnspan=4, sticky='ew', pady=5)
             self.properties_widgets['png_preview'] = w_preview
+            w_caption = tk.Label(details_lf, text="", font=('Helvetica', 8))
+            w_caption.grid(row=2, column=0, columnspan=4, sticky='ew')
+            self.properties_widgets['png_preview_caption'] = w_caption
+            # Clicking a snip in the list previews that one.
+            self.properties_widgets['paths_listbox'].bind(
+                '<<ListboxSelect>>', lambda e, s=step: self._update_png_preview(s))
             self._update_png_preview(step)
 
             tk.Label(details_lf,text="Threshold:").grid(row=3,column=0,sticky='w', pady=2)
@@ -1886,25 +1921,65 @@ class FlowchartClickerApp:
         action_btn_frm = tk.Frame(container); action_btn_frm.grid(row=7, columnspan=3, sticky='ew', pady=(15,0)); btn_pack_style = {'side': tk.LEFT, 'expand': True, 'fill': tk.X, 'padx': 2}; tk.Button(action_btn_frm, text="Apply Changes", font=('Helvetica', 9, 'bold'), command=self.apply_properties_changes, relief=tk.FLAT).pack(**btn_pack_style); tk.Button(action_btn_frm, text="Duplicate Step", font=('Helvetica', 9, 'bold'), command=self.duplicate_step, relief=tk.FLAT).pack(**btn_pack_style); tk.Button(action_btn_frm, text="Delete Step", font=('Helvetica', 9, 'bold'), command=self.remove_step, relief=tk.FLAT).pack(**btn_pack_style)
         container.columnconfigure(1, weight=1)
  
-    def _update_png_preview(self, step):
+    def _template_preview_path(self, step):
+        """Which template the preview should show, and where it sits in the list.
+
+        Follows the listbox selection so each snip can be inspected, falling back
+        to the first one.
+        """
+        if step.get('mode') == 'folder' and step.get('path') and os.path.isdir(step['path']):
+            found = sorted(f for f in os.listdir(step['path']) if f.lower().endswith('.png'))
+            if not found: return None, 0, 0
+            return os.path.join(step['path'], found[0]), len(found), 0
+
+        paths = self.step_template_paths(step)
+        if not paths: return None, 0, 0
+        listbox = self.properties_widgets.get('paths_listbox')
+        index = 0
+        if listbox is not None:
+            selection = listbox.curselection()
+            if selection: index = selection[0]
+        index = max(0, min(index, len(paths) - 1))
+        return paths[index], len(paths), index
+
+    def _update_png_preview(self, step, path=None):
         if 'png_preview' not in self.properties_widgets:
             return
-        
+
         preview_widget = self.properties_widgets['png_preview']
-        path = step.get('path')
+        caption_widget = self.properties_widgets.get('png_preview_caption')
+
+        def set_caption(text):
+            if caption_widget is not None and caption_widget.winfo_exists(): caption_widget.config(text=text)
+
+        if path is None:
+            path, total, index = self._template_preview_path(step)
+        else:
+            total, index = 0, 0
 
         if not path or not os.path.exists(path):
             preview_widget.config(image='', text="No Preview Available")
+            if step.get('mode') == 'folder':
+                set_caption("No PNG files in this folder")
+            elif total > 1:
+                set_caption("Select a snip above to preview it")
+            else:
+                set_caption("No snips yet - use Snip to add one")
             return
 
         try:
             with Image.open(path) as img:
-                img.thumbnail((200, 100)) # Resize to max 200x100
-                photo = ImageTk.PhotoImage(img)
-                preview_widget.config(image=photo, text="")
-                preview_widget.image = photo # Keep a reference!
+                dimensions = f"{img.width}x{img.height}"
+                thumb = img.copy()
+            thumb.thumbnail((220, 90)) # shrink to fit, keeping the aspect ratio
+            photo = ImageTk.PhotoImage(thumb)
+            preview_widget.config(image=photo, text="")
+            preview_widget.image = photo # Keep a reference!
+            name = os.path.basename(path)
+            set_caption(f"{index+1} of {total}: {name} ({dimensions})" if total > 1 else f"{name} ({dimensions})")
         except Exception as e:
             preview_widget.config(image='', text=f"Preview Error:\n{e}")
+            set_caption("")
             self.log(f"Failed to create PNG preview for {os.path.basename(path)}: {e}", "orange")
  
     def open_deal_finder_window(self):
@@ -2121,6 +2196,9 @@ class FlowchartClickerApp:
                         
                         s['threshold']=float(w['threshold'].get())
                         s['mode']=w['png_mode'].get()
+                        if 'paths_listbox' in w:
+                            s['paths'] = self.step_template_paths(s)
+                            s['path'] = s['paths'][0] if s['paths'] else ''
                         s['image_mode']=w['image_mode'].get()
                         s['find_first_match'] = w['find_first_match'].get()
                         if s.get('action') == 'PNG Count':
@@ -2241,7 +2319,7 @@ class FlowchartClickerApp:
             })
         elif step_type == 'png': 
             step_defaults.update({
-                'action':'Click Object', 'mode':'file', 'path':'', 'threshold':0.8, 'area':None, 
+                'action':'Click Object', 'mode':'file', 'path':'', 'paths':[], 'threshold':0.8, 'area':None, 
                 'image_mode': 'Grayscale', 'find_first_match': True,
                 'count_expression': '>= 1',
                 'count_max_cycles': 1
@@ -2800,9 +2878,12 @@ class FlowchartClickerApp:
                             if result_type == 'png':
                                 if target_pos:
                                     step_succeeded = True
-                                    self.last_detection_info.set(f"PNG Found: {confidence*100:.1f}%")
-                                    self.log_execution(f"Step {self.current_step_index + 1}: PNG FOUND at {target_pos} with {confidence*100:.1f}% confidence.", "green")
-                                    step['_last_run_info'] = {'timestamp': time.time(), 'result': True, 'details': f"Found at {target_pos} with {confidence*100:.1f}% confidence."}
+                                    # Name the template that hit: a step can carry several snips.
+                                    matched = step.get('_last_matched_template')
+                                    which = f" '{matched}'" if matched else ""
+                                    self.last_detection_info.set(f"PNG Found{which}: {confidence*100:.1f}%")
+                                    self.log_execution(f"Step {self.current_step_index + 1}: PNG{which} FOUND at {target_pos} with {confidence*100:.1f}% confidence.", "green")
+                                    step['_last_run_info'] = {'timestamp': time.time(), 'result': True, 'details': f"Found{which} at {target_pos} with {confidence*100:.1f}% confidence."}
                             
                             elif result_type == 'color':
                                 contour_area = confidence # In color detection, confidence holds the area
@@ -3472,21 +3553,92 @@ class FlowchartClickerApp:
         for key in [k for k in list(self.template_cache) if k.startswith(f"{path}|")]:
             del self.template_cache[key]
 
+    def _selected_step_index(self):
+        if self.selected_items and len(self.selected_items) == 1 and self.selected_items[0]['type'] == 'step':
+            return self.selected_items[0]['index']
+        return None
+
+    def _refresh_template_listbox(self, step):
+        """Show the step's snips, marking any whose file has gone missing."""
+        listbox = self.properties_widgets.get('paths_listbox')
+        if listbox is None: return
+        listbox.delete(0, tk.END)
+        for path in self.step_template_paths(step):
+            mark = "" if os.path.exists(path) else "  (missing)"
+            listbox.insert(tk.END, f"{os.path.basename(path)}{mark}")
+
+    def _select_template_in_listbox(self, index):
+        """Highlight one entry so the preview follows it."""
+        listbox = self.properties_widgets.get('paths_listbox')
+        if listbox is None: return
+        if 0 <= index < listbox.size():
+            listbox.selection_clear(0, tk.END)
+            listbox.selection_set(index)
+            listbox.see(index)
+
+    def add_step_templates(self):
+        """Add one or more existing PNG files to the step's template list."""
+        index = self._selected_step_index()
+        if index is None: return
+        chosen = filedialog.askopenfilenames(title="Add Template Images", filetypes=[("PNG Files", "*.png")])
+        if not chosen: return
+        paths = self.step_template_paths(self.steps[index])
+        for path in chosen:
+            if path not in paths: paths.append(path)
+        self.steps[index]['paths'] = paths
+        self.steps[index]['path'] = paths[0]
+        self.populate_properties_panel()
+        self._select_template_in_listbox(len(paths) - 1)
+        self._update_png_preview(self.steps[index])
+        self.log(f"Step {index+1} now matches {len(paths)} template(s).")
+
+    def remove_step_template(self):
+        """Drop the selected entries from the step's template list."""
+        index = self._selected_step_index()
+        listbox = self.properties_widgets.get('paths_listbox')
+        if index is None or listbox is None: return
+        chosen = sorted(listbox.curselection(), reverse=True)
+        if not chosen: return
+        paths = self.step_template_paths(self.steps[index])
+        removed = [paths[i] for i in chosen if i < len(paths)]
+        for i in chosen:
+            if i < len(paths): paths.pop(i)
+        self.steps[index]['paths'] = paths
+        self.steps[index]['path'] = paths[0] if paths else ''
+        self.populate_properties_panel()
+        self._update_png_preview(self.steps[index])
+        names = ", ".join(os.path.basename(p) for p in removed)
+        self.log(f"Removed {names} from Step {index+1}. {len(paths)} template(s) left.")
+
+    def clear_step_templates(self):
+        index = self._selected_step_index()
+        if index is None: return
+        self.steps[index]['paths'] = []
+        self.steps[index]['path'] = ''
+        self.populate_properties_panel()
+        self._update_png_preview(self.steps[index])
+        self.log(f"Cleared all templates from Step {index+1}.")
+
     def snip_image_for_step(self, event=None):
         if self.running or not (self.selected_items and len(self.selected_items) == 1 and self.selected_items[0]['type'] == 'step'): return
         index = self.selected_items[0]['index']
 
         def save_snippet(frozen, box):
             captured_image = self._crop_frozen(frozen, box)
-            filepath = filedialog.asksaveasfilename(title="Save Snippet As", defaultextension=".png", filetypes=[("PNG Files", "*.png")], initialfile=f"snippet_step_{index+1}.png")
+            filepath = filedialog.asksaveasfilename(title="Save Snippet As", defaultextension=".png", filetypes=[("PNG Files", "*.png")], initialfile=f"snippet_step_{index+1}_{len(self.step_template_paths(self.steps[index]))+1}.png")
             if not filepath: return
             try:
                 captured_image.save(filepath)
                 self._forget_template_cache(filepath) # a re-snip to the same name must not serve a stale template
-                self.steps[index]['path'] = filepath
+                paths = self.step_template_paths(self.steps[index])
+                if filepath not in paths: paths.append(filepath)
+                self.steps[index]['paths'] = paths
+                self.steps[index]['path'] = paths[0] # kept for previews, labels and older saves
                 self.populate_properties_panel()
+                self._select_template_in_listbox(len(paths) - 1)
                 self._update_png_preview(self.steps[index])
-                self.log(f"Saved snippet ({captured_image.width}x{captured_image.height}) and set path for Step {index+1}.")
+                self.log(f"Added snippet ({captured_image.width}x{captured_image.height}) to Step {index+1}. "
+                         f"{len(paths)} template(s) on this step.")
             except Exception as ex:
                 messagebox.showerror("Save Error", f"Failed to save snippet: {ex}")
                 self.log(f"Error saving snippet: {ex}", "red")
@@ -3891,43 +4043,70 @@ class FlowchartClickerApp:
             if self.running:
                 self.log_execution(f"Step {self.current_step_index + 1}: Moved mouse near {pos} (Speed: ~{self.mouse_speed.get()}s).")
    
-    def find_png(self, screen_cv, offset, step):
-        image_mode = step.get('image_mode', 'Grayscale')
-        if image_mode == 'Grayscale': screen_processed = cv2.cvtColor(screen_cv, cv2.COLOR_BGR2GRAY)
-        elif image_mode == 'Binary (B&W)': gray = cv2.cvtColor(screen_cv, cv2.COLOR_BGR2GRAY); _, screen_processed = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        else: screen_processed = screen_cv
-        
-        templates_to_check = []
-        if step['mode'] == 'file' and step['path']:
-            templates_to_check.append(self.load_template(step['path'], image_mode))
-        elif step['mode'] == 'folder' and step['path'] and os.path.isdir(step['path']):
+    def step_template_paths(self, step):
+        """The template files a PNG step matches against.
+
+        A step can hold several snips, so one step can detect any of them. Older
+        saves carry a single path, which is treated as a one-entry list; folder
+        mode still reads its directory instead.
+        """
+        paths = [p for p in (step.get('paths') or []) if p]
+        if not paths and step.get('path'): paths = [step['path']]
+        return paths
+
+    def collect_step_templates(self, step, image_mode):
+        """Load every template a PNG step should try, as (label, template_data).
+
+        Shared by find_png and find_and_count_png so a step with several snips
+        behaves the same whether it is detecting or counting.
+        """
+        if step.get('mode') == 'folder' and step.get('path') and os.path.isdir(step['path']):
             folder_cache_key = f"{step['path']}|{image_mode}"
             if folder_cache_key not in self.folder_image_cache:
                 self.folder_image_cache[folder_cache_key] = []
                 image_paths = [os.path.join(step['path'], fname) for fname in os.listdir(step['path']) if fname.lower().endswith('.png')]
                 for fpath in image_paths:
                     template_data = self.load_template(fpath, image_mode)
-                    if template_data[0] is not None:
-                        self.folder_image_cache[folder_cache_key].append(template_data)
-            templates_to_check = self.folder_image_cache.get(folder_cache_key, [])
+                    if template_data[0] is not None: self.folder_image_cache[folder_cache_key].append((os.path.basename(fpath), template_data))
+            return self.folder_image_cache.get(folder_cache_key, [])
+
+        templates = []
+        for path in self.step_template_paths(step):
+            template_data = self.load_template(path, image_mode)
+            if template_data[0] is not None:
+                templates.append((os.path.basename(path), template_data))
+        return templates
+
+    def find_png(self, screen_cv, offset, step):
+        image_mode = step.get('image_mode', 'Grayscale')
+        if image_mode == 'Grayscale': screen_processed = cv2.cvtColor(screen_cv, cv2.COLOR_BGR2GRAY)
+        elif image_mode == 'Binary (B&W)': gray = cv2.cvtColor(screen_cv, cv2.COLOR_BGR2GRAY); _, screen_processed = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        else: screen_processed = screen_cv
+
+        templates_to_check = self.collect_step_templates(step, image_mode)
 
         find_first = step.get('find_first_match', False)
         if not find_first:
-            best_match_pos, max_confidence = None, -1
+            best_match_pos, max_confidence, best_label = None, -1, None
 
-        for template_data in templates_to_check:
+        for label, template_data in templates_to_check:
             match = self.find_template_in_region(screen_processed, offset, template_data, step['threshold'])
             if match and math.isfinite(match[2]):
+                # Remember which template hit, so a step with several snips can
+                # say which one it matched.
+                step['_last_matched_template'] = label
                 if find_first:
                     return match[0:2], match[2]
-                
+
                 if match[2] > max_confidence:
                     max_confidence = match[2]
                     best_match_pos = match[0:2]
+                    best_label = label
 
         if find_first:
             return None, 0
         else:
+            step['_last_matched_template'] = best_label
             return best_match_pos, max_confidence if max_confidence > -1 else 0
 
     def find_and_count_png(self, screen_cv, offset, step):
@@ -3944,18 +4123,7 @@ class FlowchartClickerApp:
         else:
             screen_processed = screen_cv
         
-        templates_to_check = []
-        if step['mode'] == 'file' and step['path']:
-            templates_to_check.append(self.load_template(step['path'], image_mode))
-        elif step['mode'] == 'folder' and step['path'] and os.path.isdir(step['path']):
-            folder_cache_key = f"{step['path']}|{image_mode}"
-            if folder_cache_key not in self.folder_image_cache: # Caching logic
-                self.folder_image_cache[folder_cache_key] = []
-                image_paths = [os.path.join(step['path'], fname) for fname in os.listdir(step['path']) if fname.lower().endswith('.png')]
-                for fpath in image_paths:
-                    template_data = self.load_template(fpath, image_mode)
-                    if template_data[0] is not None: self.folder_image_cache[folder_cache_key].append(template_data)
-            templates_to_check = self.folder_image_cache.get(folder_cache_key, [])
+        templates_to_check = [td for _label, td in self.collect_step_templates(step, image_mode)]
         
         all_rects = []
         threshold = step['threshold']
@@ -3983,11 +4151,10 @@ class FlowchartClickerApp:
 
         if not all_rects:
             return 0
-        
-        # Use OpenCV's optimized groupRectangles function to merge overlapping boxes.
-        grouped_rects, _ = cv2.groupRectangles(all_rects, groupThreshold=1, eps=0.2)
 
-        return len(grouped_rects)
+        # count_distinct_rects replaces cv2.groupRectangles, which OpenCV 5
+        # removed. Calling it directly crashed every PNG Count step.
+        return flowchart_png.count_distinct_rects(all_rects)
 
     def find_and_count_color(self, screen_cv, offset, step):
         """
