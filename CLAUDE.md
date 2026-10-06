@@ -19,7 +19,10 @@ pip install -e ".[dev]"
 
 # Run the app
 flowchart-automation            # via installed entry point
-python FlowchartClickerApp66.py # legacy direct launch
+python FlowchartClickerApp66.py # legacy direct launch (needs the shim on Wayland)
+
+# Linux/Wayland input backend (installs ydotool, starts the ydotoold user service)
+./scripts/setup-wayland.sh
 
 # Lint / format
 ruff check .
@@ -53,6 +56,15 @@ The project is mid-refactor. Today there are two parallel layers:
 - `detection/ocr.py` - `extract_number`, `preprocess`, `AVAILABLE` flag; sets up Tesseract path on import
 - `execution/actions.py` - `execute_move`, `execute_click`, `execute_action` taking `GlobalSettings`
 - `integrations/ge_client.py` - `fetch_mapping`, `fetch_item_price`, `fetch_all_prices`, `calculate_price` (pure HTTP)
+- `wayland/` - Linux/Wayland backend. `capture.py` (grim + hyprctl, handles HiDPI scaling and clamps regions to the monitor), `input.py` (ydotool, including the 0x40 press / 0x80 release / 0xC0 click byte encoding), `keycodes.py` (pyautogui key names to Linux input-event-codes), `shim.py` (a `PyAutoGUIShim` ModuleType installed into `sys.modules['pyautogui']`).
+
+### Platform support
+
+`pyautogui` is X11/Windows only and **cannot be imported at all on Wayland**: it calls `size()` at import time and raises `Xlib.error.XauthError`. `wayland.install_shim()` must therefore run before anything imports pyautogui, which is why `__main__.py` calls it first. On Wayland, capture goes through grim and input through ydotool, so input requires both the `ydotool` package and a running `ydotoold` daemon (`scripts/setup-wayland.sh`). Without them the editor and detection still work and input calls raise `InputError` with the fix in the message.
+
+Global hotkeys (F2/F3/F4) use the `keyboard` library, which needs root on Linux, so they are unavailable there. Detection and input code must never assume they exist.
+
+Note that `FlowchartClickerApp66.py` is excluded from ruff, so its own style is unchanged.
 
 ### Data model (`models.py`)
 

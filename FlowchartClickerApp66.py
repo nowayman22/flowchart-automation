@@ -4,6 +4,18 @@ import tkinter.font as tkfont
 import os
 import cv2
 import numpy as np
+
+# --- Wayland support ---------------------------------------------------------
+# pyautogui is X11-only: merely importing it on a Wayland session calls size(),
+# which needs an X connection and raises Xlib.error.XauthError. Install the
+# grim/ydotool replacement first so the import below picks it up. On Windows,
+# macOS and X11 this is a no-op and the real pyautogui is used.
+try:
+    from flowchart_automation.wayland import install_shim as _install_shim
+    _install_shim()
+except Exception as _shim_error:  # not installed, or not a Wayland session
+    print(f"Note: Wayland input backend unavailable ({_shim_error}).")
+
 import pyautogui
 import time
 import keyboard
@@ -230,8 +242,11 @@ class FlowchartClickerApp:
 
         # --- Final UI Setup ---
         self.build_ui()
-        self.setup_hotkeys()
+        # apply_theme() must run before setup_hotkeys(): registering global
+        # hotkeys fails on Linux (the keyboard library needs root), and its
+        # error handler calls log(), which reads self.current_theme.
         self.apply_theme()
+        self.setup_hotkeys()
         self.log("Application initialized successfully.")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -3403,7 +3418,12 @@ class FlowchartClickerApp:
 
     def log(self, message, color_name=None):
         theme = self.current_theme
-        if color_name in ["green", "orange", "red"]: self.status_label_color_state = color_name; self.status_label.config(foreground=theme[f'status_{color_name}'])
+        # Logging must never be able to crash the app: the theme is empty
+        # until apply_theme() runs, and a missing colour key should degrade to
+        # the default rather than raise.
+        if color_name in ["green", "orange", "red"]:
+            self.status_label_color_state = color_name
+            self.status_label.config(foreground=theme.get(f'status_{color_name}', theme.get('status_blue', '#61AFEF')))
         log_entry = f"[{time.strftime('%H:%M:%S')}] {message}"; self.full_log_history.append(log_entry); self.filter_log()
 
     def log_execution(self, message, color_name=None):

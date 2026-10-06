@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Flowchart Automation
+GenericName=Automation Builder
+Comment=Visual, node-based automation for image, colour, OCR and movement detection
+# Replace REPO with the absolute path to your checkout before installing, e.g.
+#   sed "s|REPO|$PWD|g" packaging/flowchart-automation.desktop \
+#     > ~/.local/share/applications/flowchart-automation.desktop
+Exec=REPO/.venv/bin/flowchart-automation
+Path=REPO
+Icon=flowchart-automation
+Terminal=false
+Categories=Utility;
+Keywords=automation;flowchart;ocr;macro;clicker;detection;
+StartupNotify=true

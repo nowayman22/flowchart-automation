@@ -32,6 +32,46 @@ flowchart-automation
 
 Python 3.10+ recommended.
 
+### Linux / Wayland (Hyprland, Sway, ...)
+
+The app drives the screen with `pyautogui`, which speaks X11. On a Wayland
+session that library cannot even be imported, so a Wayland backend is used
+instead: **grim** for screen capture and **ydotool** for mouse and keyboard.
+
+Capture works as soon as grim is installed (it ships with Omarchy). Input needs
+ydotool, because Wayland blocks one client from injecting events into another;
+ydotool emulates a real input device through the kernel's uinput interface.
+
+```bash
+./scripts/setup-wayland.sh     # installs ydotool and starts the ydotoold service
+```
+
+That script uses `omarchy pkg add`, enables the `ydotool.service` user unit and
+verifies injection by moving the cursor. Without it the editor still runs and
+screen detection still works, but clicking and typing steps will report that
+input is unavailable.
+
+**Global hotkeys (F2/F3/F4) do not work on Linux.** They are registered with the
+`keyboard` library, which requires root. Use the on-screen Start/Stop buttons, or
+bind the keys yourself in `~/.config/hypr/bindings.conf`.
+
+### Desktop launcher
+
+To launch from Walker, install the icon and desktop entry (run from the repo
+root, so `$PWD` fills in the paths):
+
+```bash
+install -Dm644 packaging/flowchart-automation.png \
+  ~/.local/share/icons/hicolor/32x32/apps/flowchart-automation.png
+sed "s|REPO|$PWD|g" packaging/flowchart-automation.desktop \
+  > ~/.local/share/applications/flowchart-automation.desktop
+update-desktop-database ~/.local/share/applications
+```
+
+`update-desktop-database` and `gtk-update-icon-cache` come from
+`desktop-file-utils` and `gtk-update-icon-cache`; both are already present on
+Omarchy.
+
 ### Windows binary
 
 Grab the latest `.exe` from the [Releases](https://github.com/nowayman22/flowchart-automation/releases) page. No install required — unzip and run.
@@ -42,6 +82,7 @@ For OCR-based "Number" logical steps you also need Tesseract.
 
 - **Installed system-wide:** grab the Windows installer from [UB-Mannheim](https://github.com/UB-Mannheim/tesseract/wiki). The app will auto-detect it on PATH or at `C:\Program Files\Tesseract-OCR`.
 - **Portable:** drop a `tesseract/` folder next to the script or `.exe` containing `tesseract.exe` and its `tessdata/`. The app checks this path first.
+- **Linux:** install `tesseract` from your package manager; it is already on PATH.
 
 ## Hotkeys
 
@@ -50,6 +91,8 @@ For OCR-based "Number" logical steps you also need Tesseract.
 | F2 | Start / stop automation |
 | F3 | Capture at cursor (pixel color, coordinate, etc.) |
 | F4 | Draw a global scan area |
+
+On Linux these require root, so they are unavailable; use the toolbar buttons.
 
 ## Quick start
 

@@ -10,11 +10,17 @@ import sys
 import tkinter as tk
 from pathlib import Path
 
+from flowchart_automation.wayland import install_shim
+
 
 def main() -> None:
     _project_root = str(Path(__file__).resolve().parents[2])
     if _project_root not in sys.path:
         sys.path.insert(0, _project_root)
+
+    # Must run before the legacy module imports pyautogui: on a Wayland session
+    # that import raises Xlib.error.XauthError and the app never starts.
+    install_shim()
 
     from FlowchartClickerApp66 import FlowchartClickerApp
 

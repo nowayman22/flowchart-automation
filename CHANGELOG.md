@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The app could not start on Linux at all.** `import pyautogui` runs
+  `size()` at import time, which needs an X connection and dies with
+  `Xlib.error.XauthError` on Wayland, so the module never loaded. The entry
+  point now installs the Wayland shim first.
+- **Startup crash on any non-Windows machine.** `setup_hotkeys()` ran before
+  `apply_theme()`, so when hotkey registration failed (the `keyboard` library
+  needs root on Linux) the error handler called `log()`, which indexed the
+  still-empty `current_theme` and raised `KeyError: 'status_red'`. The theme is
+  applied first now, and `log()` falls back to a default colour instead of
+  raising, so logging can never take the app down.
 - **v1 import silently dropped every logical step.** The migration left v1's
   `action: 'Execute'` key on logical steps, which `LogicalStep` has no field for,
   so the constructor raised inside a bare `except Exception: pass`. A four-step
@@ -27,11 +37,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns `None` for empty input, leaving the existing `total > 0` guard
   unreachable.
 - CI never ran. The workflow triggered on `main`; the default branch is `master`.
+- `ruff format` was rewriting the deliberately bad Python examples quoted in
+  `docs/CODE_REVIEW.md`; `docs/` is now excluded from ruff.
 
 ### Added
+- **Wayland support.** The app now runs on Hyprland/Sway and other Wayland
+  compositors via `flowchart_automation/wayland/`: screen capture through grim
+  and mouse/keyboard output through ydotool. `install_shim()` places a
+  pyautogui-compatible object in `sys.modules` before the legacy module loads,
+  so its ~20 existing `pyautogui.*` call sites work unchanged. Input needs
+  `ydotool` plus the `ydotoold` daemon (`scripts/setup-wayland.sh` sets both
+  up); capture needs only grim.
+- `packaging/flowchart-automation.desktop` and a PNG icon so the app can be
+  launched from Walker.
 - `tests/` with 145 tests covering the v1 migration, JSON round trip, the
   expression evaluator, colour/template/movement detection, and GE price math.
   `tests/fixtures/legacy_v1_project.json` is a v1 export with all four step types.
+- `tests/test_wayland_backend.py` (59 tests) covering keycodes, grim geometry
+  including HiDPI scaling and clamping, ydotool button encoding, and the shim,
+  with subprocess calls mocked so it runs without a compositor.
 - `Project.load_warnings` records every step that could not be read, and
   `persistence.load()` emits a `UserWarning` instead of losing data quietly.
   `load(path, strict=True)` and `step_from_dict(data, strict=True)` raise instead.
